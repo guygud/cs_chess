@@ -1,6 +1,6 @@
 import { CONFIG } from './config.js';
 import { applyRoundEconomy, canStep, createRound, loadoutCost, matchStatus, neighbors, remember, resolveMove } from './engine.js';
-import { planRound, scriptFromRoute } from './bot.js';
+import { defenseOrders, planRound } from './bot.js';
 import { clearTimers, render } from './ui.js';
 
 function assertConfig() {
@@ -57,6 +57,14 @@ function freshState() {
 
 let state;
 
+function armClock(seconds) {
+  state.deadline = Date.now() + seconds * 1000;
+}
+
+function clearClock() {
+  state.deadline = null;
+}
+
 function beginRound() {
   clearTimers();
   state.bot = null;
@@ -71,6 +79,7 @@ function beginRound() {
   state.phase = 'buy';
   state.replayIndex = 0;
   state.playing = false;
+  armClock(CONFIG.ui.buySeconds);
   render(state, actions);
 }
 
@@ -83,6 +92,25 @@ function settle() {
   state.history.push(state.roundState.winner);
   state.matchWinner = matchStatus(state.score, state.round, CONFIG);
   state.settled = true;
+}
+
+function cheapenDraft() {
+  const wallet = state.wallets.attack;
+  const cost = () => loadoutCost(state.draft.fighters, state.draft.stock, CONFIG);
+  while (cost() > wallet && state.draft.stock.length) state.draft.stock.pop();
+  while (cost() > wallet) {
+    const armored = state.draft.fighters.find((fighter) => fighter.armor);
+    if (!armored) break;
+    armored.armor = false;
+  }
+  while (cost() > wallet) {
+    const pricey = state.draft.fighters
+      .filter((fighter) => fighter.weapon !== 'pistol')
+      .sort((left, right) => CONFIG.weaponOrder.indexOf(right.weapon) - CONFIG.weaponOrder.indexOf(left.weapon))[0];
+    if (!pricey) break;
+    const index = CONFIG.weaponOrder.indexOf(pricey.weapon);
+    pricey.weapon = CONFIG.weaponOrder[Math.max(0, index - 1)];
+  }
 }
 
 function moveOrders() {
@@ -217,15 +245,32 @@ const actions = {
       state.draft.selected = null;
       state.phase = 'move';
       state.error = null;
+      armClock(CONFIG.ui.moveSeconds);
       render(state, actions);
     } catch (error) {
       state.error = error.message;
       render(state, actions);
     }
   },
+  onTimeout() {
+    if (state.phase !== 'buy' && state.phase !== 'move') return;
+    state.deadline = null;
+    if (state.phase === 'buy') {
+      cheapenDraft();
+      actions.onCommitBuy();
+      return;
+    }
+    actions.onCommitMove();
+  },
   onCommitMove() {
     try {
-      const defense = scriptFromRoute(state.bot.route, CONFIG.rosters.defense)[state.roundState.move];
+      const defense = defenseOrders(
+        state.bot.route,
+        CONFIG.rosters.defense,
+        state.roundState.move,
+        state.roundState,
+        CONFIG,
+      );
       const step = resolveMove(state.roundState, {
         attack: moveOrders(),
         defense,
@@ -235,6 +280,7 @@ const actions = {
       state.roundState = step.state;
       state.phase = 'reveal';
       state.error = null;
+      clearClock();
       if (state.roundState.winner) settle();
       render(state, actions);
     } catch (error) {
@@ -247,10 +293,12 @@ const actions = {
       state.phase = 'review';
       state.replayIndex = 0;
       state.playing = true;
+      clearClock();
       render(state, actions);
       return;
     }
     state.phase = 'move';
+    armClock(CONFIG.ui.moveSeconds);
     state.draft.to = {};
     for (const fighter of state.roundState.fighters) {
       if (fighter.side === 'attack' && fighter.alive) state.draft.to[fighter.name] = fighter.point;

@@ -118,10 +118,13 @@ function living(fighters, cellId, side) {
   ));
 }
 
-function sidePower(group, cellId, side, owned, penalty, config) {
-  const raw = group.reduce((sum, fighter) => sum + weaponStrength(fighter.weapon, config), 0);
-  const multiplied = owned[cellId] === side ? raw * config.rules.holdMultiplier : raw;
-  return Math.max(0, multiplied - penalty);
+function sidePower(group, cellId, side, owned, penalty, stayed, config) {
+  const raw = group.reduce((sum, fighter) => {
+    const base = weaponStrength(fighter.weapon, config);
+    const stood = stayed.has(fighter.name) && owned[cellId] === side;
+    return sum + (stood ? base * config.rules.holdMultiplier : base);
+  }, 0);
+  return Math.max(0, raw - penalty);
 }
 
 function weakest(group) {
@@ -267,14 +270,15 @@ export function resolveMove(round, orders, config = CONFIG) {
         if (item.type === 'flash') flashes[side] = true;
       }
     }
-    const attackFinal = sidePower(attackGroup, cellId, 'attack', state.owned, smokes.attack, config);
-    const defenseFinal = sidePower(defenseGroup, cellId, 'defense', state.owned, smokes.defense, config);
+    const attackFinal = sidePower(attackGroup, cellId, 'attack', state.owned, smokes.attack, stayed, config);
+    const defenseFinal = sidePower(defenseGroup, cellId, 'defense', state.owned, smokes.defense, stayed, config);
     const present = [...attackGroup, ...defenseGroup].map((fighter) => ({
       name: fighter.name,
       side: fighter.side,
       weapon: fighter.weapon,
       died: false,
       saved: false,
+      stood: stayed.has(fighter.name),
     }));
     const contact = attackGroup.length > 0 && defenseGroup.length > 0;
     let outcome = null;
@@ -306,7 +310,7 @@ export function resolveMove(round, orders, config = CONFIG) {
         const winners = winner === 'attack' ? attackGroup : defenseGroup;
         mark(losers, 'all');
         const flash = winner === 'attack' ? flashes.attack : flashes.defense;
-        if (!flash) killOne(winners);
+        if (!flash && winners.length > 1) killOne(winners);
         outcome = winner;
       }
     }

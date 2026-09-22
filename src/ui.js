@@ -30,6 +30,20 @@ function shownMoney(state) {
   return state.wallets.attack;
 }
 
+function clockText(state) {
+  if (!state.deadline) return '';
+  const left = Math.max(0, Math.ceil((state.deadline - Date.now()) / 1000));
+  const minutes = Math.floor(left / 60);
+  const seconds = String(left % 60).padStart(2, '0');
+  return `${minutes}:${seconds}`;
+}
+
+function clockHtml(state) {
+  const text = clockText(state);
+  if (!text) return '';
+  const left = Math.max(0, Math.ceil((state.deadline - Date.now()) / 1000));
+  return `<span class="clock${left <= 10 ? ' hot' : ''}" data-clock>${text}</span>`;
+}
 function rulesBlock() {
   const rifle = CONFIG.weapons.rifle;
   const smg = CONFIG.weapons.smg;
@@ -38,11 +52,11 @@ function rulesBlock() {
     <details>
       <summary>Правила</summary>
       <ul>
-        <li>Матч до\u00A0${CONFIG.rules.winsNeeded} побед и\u00A0не больше ${CONFIG.rules.maxRounds} раундов. В\u00A0раунде ${CONFIG.rules.movesPerRound} хода. Обе стороны ходят одновременно и\u00A0вслепую.</li>
-        <li>Шаг только в\u00A0соседнюю клетку или на\u00A0месте. Вы начинаете на\u00A0Т-спавне, бот на\u00A0КТ-спавне.</li>
+        <li>Матч до\u00A0${CONFIG.rules.winsNeeded} побед и\u00A0не больше ${CONFIG.rules.maxRounds} раундов. В\u00A0раунде ${CONFIG.rules.movesPerRound} хода. Обе стороны ходят одновременно и\u00A0вслепую. На\u00A0закуп ${CONFIG.ui.buySeconds} секунд, на\u00A0ход ${CONFIG.ui.moveSeconds}. Время вышло\u00A0— уходит то, что уже стоит.</li>
+        <li>Шаг только в\u00A0соседнюю клетку или на\u00A0месте. Вы начинаете на\u00A0Т-спавне, бот на\u00A0КТ-спавне. До\u00A0плента вам три шага, защите два.</li>
         <li>Пистолет даёт 1, ${esc(smg.name)} ${smg.strength}, ${esc(rifle.name)} ${rifle.strength}. ${esc(CONFIG.armor.name)} силы не даёт и\u00A0снимает одну смерть за\u00A0раунд.</li>
-        <li>Каждая клетка с\u00A0самого начала ваша или защиты. У\u00A0своих множитель ×${hold}. Где встретились, слабые гибнут все, сильные теряют одного. При равенстве клетка остаётся у\u00A0хозяина, и\u00A0каждая сторона теряет одного. Отстоитесь в\u00A0чужой клетке одни\u00A0— со\u00A0следующего хода она ваша.</li>
-        <li>Бомба ставится, когда вы живы на\u00A0пленте и\u00A0защиты там нет. Потом защита может обезвредить, если займёт клетку одна. После третьего хода неснятая бомба\u00A0— ваш раунд. Без бомбы побеждает, у\u00A0кого больше живых. Поровну\u00A0— защита.</li>
+        <li>Проходные клетки с\u00A0самого начала у\u00A0защиты, пленты ваши. Множитель ×${hold} только у\u00A0того, кто стоит в\u00A0своей клетке, а\u00A0не пришёл. Где встретились, слабые гибнут все. У\u00A0сильных, если их двое и\u00A0больше, погибает один. Кто выиграл в\u00A0одиночку, остаётся жив. При равенстве клетка остаётся у\u00A0хозяина, и\u00A0каждая сторона теряет одного. Отстоитесь в\u00A0чужой клетке одни\u00A0— со\u00A0следующего хода она ваша.</li>
+        <li>Бомба ставится, когда вы живы на\u00A0пленте и\u00A0защиты там нет. Потом защита может обезвредить, если займёт клетку одна. После четвёртого хода неснятая бомба\u00A0— ваш раунд. Без бомбы побеждает, у\u00A0кого больше живых. Поровну\u00A0— защита.</li>
         <li>Гранаты списываются в\u00A0начале раунда. Бросить можно любым ходом, в\u00A0свою клетку или соседнюю. Не бросили\u00A0— сгорели. Дымовая снимает ${CONFIG.utility.smoke.penalty}. Световая: победа без потерь, при равенстве клетка ваша.</li>
         <li>Чужих видно только в\u00A0клетке, где на\u00A0этом ходу был контакт. Разбор после раунда показывает всё.</li>
       </ul>
@@ -51,13 +65,14 @@ function rulesBlock() {
 }
 
 function chip(person, tokenId) {
-  const strength = CONFIG.weapons[person.weapon].strength;
+  const raw = CONFIG.weapons[person.weapon].strength;
+  const strength = person.stood ? raw * CONFIG.rules.holdMultiplier : raw;
   const drag = tokenId ? ` data-token="${esc(tokenId)}"` : '';
-  const classes = ['token', person.side === 'defense' ? 'enemy' : 'own', person.alive === false ? 'dead' : '']
+  const classes = ['token', person.side === 'defense' ? 'enemy' : 'own', person.alive === false ? 'dead' : '', person.stood ? 'stood' : '']
     .filter(Boolean)
     .join(' ');
   const armor = person.armor && !person.armorUsed ? ' Б' : '';
-  return `<span class="${classes}"${drag}>${esc(person.name)} ${strength}${armor}</span>`;
+  return `<span class="${classes}"${drag}>${esc(person.name)} ${formatStrength(strength)}${armor}</span>`;
 }
 
 function ownPower(state, cellId) {
@@ -67,8 +82,12 @@ function ownPower(state, cellId) {
     const to = state.draft.to[fighter.name] || fighter.point;
     return to === cellId;
   });
-  const raw = people.reduce((sum, fighter) => sum + CONFIG.weapons[fighter.weapon].strength, 0);
-  if (state.roundState.owned[cellId] === 'attack') return raw * CONFIG.rules.holdMultiplier;
+  const raw = people.reduce((sum, fighter) => {
+    const base = CONFIG.weapons[fighter.weapon].strength;
+    const stood = (state.draft.to[fighter.name] || fighter.point) === fighter.point
+      && state.roundState.owned[cellId] === 'attack';
+    return sum + (stood ? base * CONFIG.rules.holdMultiplier : base);
+  }, 0);
   return raw;
 }
 
@@ -98,7 +117,8 @@ function peopleInCell(state, cellId) {
       const to = fighter.alive ? (state.draft.to[fighter.name] || fighter.point) : fighter.point;
       if (to !== cellId) continue;
       const index = state.draft.fighters.findIndex((item) => item.name === fighter.name);
-      chips.push(chip(fighter, fighter.alive ? `fighter-${index}` : ''));
+      const stood = fighter.alive && to === fighter.point && state.roundState.owned[cellId] === 'attack';
+      chips.push(chip({ ...fighter, stood }, fighter.alive ? `fighter-${index}` : ''));
     }
     return chips.map((html) => ({ html }));
   }
@@ -112,7 +132,9 @@ function peopleInCell(state, cellId) {
       const seen = fight?.contact && fight.present.some((person) => person.name === fighter.name);
       if (!seen) continue;
     }
-    chips.push(chip(fighter, ''));
+    const card = fight?.present?.find((person) => person.name === fighter.name);
+    const stood = Boolean(card?.stood && fight?.owned === fighter.side);
+    chips.push(chip({ ...fighter, stood }, ''));
   }
   return chips.map((html) => ({ html }));
 }
@@ -257,12 +279,12 @@ function panel(state) {
     return `
       <section class="panel">
         <h2>Закуп</h2>
-        <p class="hint">Гранаты списываются сейчас. Бросить можно на\u00A0любом из\u00A0трёх ходов. Не бросили\u00A0— сгорели.</p>
+        <p class="hint">На\u00A0закуп ${CONFIG.ui.buySeconds}\u00A0секунд. Гранаты списываются сейчас. Бросить можно на\u00A0любом из\u00A0четырёх ходов. Не бросили\u00A0— сгорели.</p>
         ${weaponPicker(state)}
         <div class="actions">${grenadeButtons(state)}</div>
         <p class="cost-line ${ready ? 'ok' : 'bad'}">Набор ${formatMoney(cost)}. Останется ${formatMoney(state.wallets.attack - cost)}.</p>
         ${state.error ? `<p class="error">${esc(state.error)}</p>` : ''}
-        <button type="button" id="commit"${ready ? '' : ' disabled'}>Начать раунд</button>
+        <button type="button" id="commit"${ready ? '' : ' disabled'}>Начать раунд${clockHtml(state)}</button>
         ${rulesBlock()}
       </section>
     `;
@@ -276,7 +298,7 @@ function panel(state) {
         <p class="hint">Перетащите живого в\u00A0соседнюю клетку или оставьте где стоит. Бот ходит одновременно и\u00A0вашей расстановки не видит.</p>
         <p class="unfound">Не найдено: ${missing}</p>
         ${state.error ? `<p class="error">${esc(state.error)}</p>` : ''}
-        <button type="button" id="commit">Сделать ход</button>
+        <button type="button" id="commit">Сделать ход${clockHtml(state)}</button>
         <p class="hint">Деньги набора: ${formatMoney(state.bill.attack)}. Сейчас ${formatMoney(money)}.</p>
         ${rulesBlock()}
       </section>
@@ -324,10 +346,14 @@ function scoreboard(state) {
   return `
     <header class="top">
       <div>
-        <p class="eyebrow">тестовая сборка · три хода</p>
+        <p class="eyebrow">тестовая сборка · четыре хода</p>
         <h1>Dust2</h1>
       </div>
-      <p class="wallet"><span class="muted">Ваши деньги</span><strong>${formatMoney(shownMoney(state))}</strong></p>
+      <div class="wallet">
+        <p class="muted">Ваши деньги</p>
+        <strong>${formatMoney(shownMoney(state))}</strong>
+        ${clockHtml(state)}
+      </div>
     </header>
     <section class="scoreboard">
       <div><p class="role">Вы · атака</p><p class="num">${state.score.attack}</p></div>
@@ -422,5 +448,23 @@ export function render(state, actions) {
 
   if (state.phase === 'review' && state.playing && state.replayIndex < state.log.length - 1) {
     timers.push(setTimeout(() => actions.onReplay(state.replayIndex + 1, true), CONFIG.ui.playbackStepMs));
+  }
+
+  if ((state.phase === 'buy' || state.phase === 'move') && state.deadline) {
+    const tick = () => {
+      const left = state.deadline ? state.deadline - Date.now() : 0;
+      if (left <= 0) {
+        actions.onTimeout();
+        return;
+      }
+      const text = clockText(state);
+      const hot = Math.ceil(left / 1000) <= 10;
+      document.querySelectorAll('[data-clock]').forEach((node) => {
+        node.textContent = text;
+        node.classList.toggle('hot', hot);
+      });
+      timers.push(setTimeout(tick, 250));
+    };
+    timers.push(setTimeout(tick, 250));
   }
 }

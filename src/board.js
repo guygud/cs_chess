@@ -22,6 +22,7 @@ function rect(cellId, map) {
   const cell = map.cells[cellId];
   return {
     x: cell.x,
+    y: cell.y,
     r: cell.x + cell.w,
     b: cell.y + cell.h,
     cx: cell.x + cell.w / 2,
@@ -31,24 +32,19 @@ function rect(cellId, map) {
 
 function elbowsFor(left, right, map) {
   const key = [left, right].sort().join('-');
-  const box = map.viewBox;
-  const bottom = box.height - 10;
-  const edge = box.width - 8;
-  if (key === 'MID-TSPAWN') {
-    const spawn = rect('TSPAWN', map);
-    const mid = rect('MID', map);
-    const gap = (spawn.r + rect('SHORT', map).x) / 2;
-    return [[gap, spawn.cy], [gap, mid.cy]];
-  }
   if (key === 'CTSPAWN-MID') {
     const mid = rect('MID', map);
     const ct = rect('CTSPAWN', map);
-    return [[mid.cx, bottom], [edge, bottom], [edge, ct.cy]];
+    const short = rect('SHORT', map);
+    const gutter = (ct.r + short.x) / 2;
+    const below = short.b + (ct.y - short.b) / 2;
+    return [[gutter, mid.cy], [gutter, below], [ct.cx, below]];
   }
-  if (key === 'PLANTB-TUNNEL') {
-    const tunnel = rect('TUNNEL', map);
-    const plant = rect('PLANTB', map);
-    return [[tunnel.cx, bottom], [edge, bottom], [edge, plant.cy]];
+  if (key === 'CTSPAWN-LONG') {
+    const long = rect('LONG', map);
+    const ct = rect('CTSPAWN', map);
+    const edge = map.viewBox.width - 6;
+    return [[edge, long.cy], [edge, ct.cy]];
   }
   return [];
 }
