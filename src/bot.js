@@ -1,5 +1,5 @@
 import { CONFIG } from './config.js';
-import { canStep, compare, loadoutCost, neighbors, weaponStrength } from './engine.js';
+import { canStep, compare, loadoutCost, neighbors, sidePower, weaponStrength } from './engine.js';
 
 function fail(message) {
   throw new Error(message);
@@ -85,24 +85,69 @@ export function scriptFromRoute(route, names) {
   }));
 }
 
-function cellPower(group, cellId, side, owned, config, standing) {
-  return group.reduce((sum, fighter) => {
-    const raw = weaponStrength(fighter.weapon, config);
-    const bonus = standing(fighter) && owned[cellId] === side;
-    return sum + (bonus ? raw * config.rules.holdMultiplier : raw);
-  }, 0);
-}
-
-function ahead(defenders, attackers, cellId, state, config) {
-  return compare(
-    cellPower(defenders, cellId, 'defense', state.owned, config, (fighter) => fighter.point === cellId),
-    cellPower(attackers, cellId, 'attack', state.owned, config, (fighter) => fighter.point === cellId),
+// В своей клетке ничья остаётся за защитой, поэтому её достаточно.
+function holdsCell(defenders, attackers, cellId, state, config) {
+  const diff = compare(
+    sidePower(defenders, cellId, 'defense', state.owned, 0, (fighter) => fighter.point === cellId, config),
+    sidePower(attackers, cellId, 'attack', state.owned, 0, (fighter) => fighter.point === cellId, config),
     config,
-  ) > 0;
+  );
+  return state.owned[cellId] === 'defense' ? diff >= 0 : diff > 0;
 }
 
-// Шаблон задаёт, куда идти, пока контакта нет. После хода бот видит уже случившееся
-// и добирает людей на плент, где своих не хватает. Текущий ход игрока ему не виден.
+function cellDistance(from, to, config) {
+  if (from === to) return 0;
+  const queue = [[from, 0]];
+  const seen = new Set([from]);
+  while (queue.length) {
+    const [cell, steps] = queue.shift();
+    for (const next of neighbors(cell, config)) {
+      if (seen.has(next)) continue;
+      if (next === to) return steps + 1;
+      seen.add(next);
+      queue.push([next, steps + 1]);
+    }
+  }
+  return Infinity;
+}
+
+// Один шаг по кратчайшему пути к цели. Бот не видит текущий ход игрока — только уже случившееся.
+function stepToward(from, goal, config) {
+  if (from === goal) return from;
+  if (canStep(from, goal, config)) return goal;
+  let best = null;
+  let bestDist = Infinity;
+  for (const next of neighbors(from, config)) {
+    const dist = cellDistance(next, goal, config);
+    if (dist < bestDist || (dist === bestDist && (!best || next.localeCompare(best, 'ru') < 0))) {
+      bestDist = dist;
+      best = next;
+    }
+  }
+  return best || from;
+}
+
+function goingTo(defense, dest, cellId) {
+  return defense.filter((fighter) => dest[fighter.name] === cellId);
+}
+
+// Клетки, через которые атака войдёт на плент: соседи плента на её кратчайшем пути.
+function laneCells(plant, attackers, config) {
+  const lanes = new Map();
+  for (const cellId of neighbors(plant, config)) {
+    if (config.map.cells[cellId].plant) continue;
+    const coming = attackers.filter((fighter) => (
+      cellDistance(fighter.point, cellId, config) + 1 === cellDistance(fighter.point, plant, config)
+      || fighter.point === cellId
+    ));
+    if (coming.length) lanes.set(cellId, coming);
+  }
+  return lanes;
+}
+
+// Шаблон задаёт, куда идти, пока контакта нет. Дальше бот видит уже случившееся
+// и держит свою полосу перед плентом, а не бежит на сам плент: множитель только у себя.
+// Текущий ход игрока ему не виден.
 export function defenseOrders(route, names, moveIndex, state, config = CONFIG) {
   const script = scriptFromRoute(route, names)[moveIndex];
   const planned = new Map(script.moves.map((order) => [order.name, order.to]));
@@ -114,48 +159,83 @@ export function defenseOrders(route, names, moveIndex, state, config = CONFIG) {
     dest[fighter.name] = wish && canStep(fighter.point, wish, config) ? wish : fighter.point;
   }
 
+  const threatRange = config.rules.threatRange ?? 2;
   const plants = config.cellOrder.filter((cellId) => config.map.cells[cellId].plant);
-  const attackOn = Object.fromEntries(plants.map((cellId) => [
-    cellId,
-    attack.filter((fighter) => fighter.point === cellId),
-  ]));
-  const hot = plants.filter((cellId) => attackOn[cellId].length > 0);
-  for (const cellId of plants) {
-    if (attackOn[cellId].length) continue;
-    const incoming = attack.filter((fighter) => neighbors(cellId, config).includes(fighter.point));
-    if (!incoming.length) continue;
-    attackOn[cellId] = incoming;
-    hot.push(cellId);
+  const bombPoint = state.bomb && !state.defused ? state.bomb.point : null;
+
+  // Цель: клетка, которую надо занять, и кем её грозят взять.
+  const goals = [];
+  for (const plant of plants) {
+    const onSite = attack.filter((fighter) => fighter.point === plant);
+    if (onSite.length) {
+      goals.push({ cell: plant, attackers: onSite });
+      continue;
+    }
+    // Атака у двери — закрываем сам плент. Дальше — держим полосу, там работает множитель.
+    const atDoor = attack.filter((fighter) => cellDistance(fighter.point, plant, config) === 1);
+    if (atDoor.length) goals.push({ cell: plant, attackers: atDoor });
+    const far = attack.filter((fighter) => {
+      const steps = cellDistance(fighter.point, plant, config);
+      return steps > 1 && steps <= threatRange;
+    });
+    if (!far.length) continue;
+    for (const [lane, coming] of laneCells(plant, far, config)) {
+      goals.push({ cell: lane, attackers: coming });
+    }
   }
-  if (state.bomb && !state.defused && !hot.includes(state.bomb.point)) hot.push(state.bomb.point);
+  if (bombPoint) {
+    const already = goals.find((goal) => goal.cell === bombPoint);
+    if (already) already.save = true;
+    else goals.push({ cell: bombPoint, attackers: attack.filter((f) => f.point === bombPoint), hold: false, save: true });
+  }
+  goals.sort((left, right) => {
+    if (left.save && !right.save) return -1;
+    if (right.save && !left.save) return 1;
+    return right.attackers.length - left.attackers.length;
+  });
 
   const used = new Set();
-  hot.sort((left, right) => (attackOn[right]?.length || 0) - (attackOn[left]?.length || 0));
-  for (const cellId of hot) {
-    const attackers = attackOn[cellId] || [];
-    const chosen = [];
-    const pool = defense.filter((fighter) => canStep(fighter.point, cellId, config));
-    pool.sort((left, right) => {
-      const rank = (fighter) => {
-        if (fighter.point === cellId) return 0;
-        return hot.includes(fighter.point) ? 2 : 1;
-      };
-      return rank(left) - rank(right)
-        || weaponStrength(right.weapon, config) - weaponStrength(left.weapon, config);
-    });
-    for (const fighter of pool) {
-      if (used.has(fighter.name)) continue;
-      if (hot.includes(fighter.point) && fighter.point !== cellId) {
-        const stay = defense.filter((other) => (
-          other.point === fighter.point && other.name !== fighter.name && !used.has(other.name)
-        ));
-        if (!ahead(stay, attackOn[fighter.point] || [], fighter.point, state, config)) continue;
-      }
-      chosen.push(fighter);
+
+  // Кто уже стоит на нужной клетке, там и остаётся: только так работает множитель.
+  for (const goal of goals) {
+    for (const fighter of defense) {
+      if (used.has(fighter.name) || fighter.point !== goal.cell) continue;
       used.add(fighter.name);
-      if (ahead(chosen, attackers, cellId, state, config)) break;
+      dest[fighter.name] = goal.cell;
     }
-    for (const fighter of chosen) dest[fighter.name] = cellId;
+  }
+
+  for (const goal of goals) {
+    const { cell, attackers } = goal;
+    const enough = () => Boolean(attackers.length) && !goal.save
+      && holdsCell(goingTo(defense, dest, cell), attackers, cell, state, config);
+    if (enough()) continue;
+
+    const free = defense.filter((fighter) => !used.has(fighter.name));
+    const reach = free
+      .filter((fighter) => canStep(fighter.point, cell, config))
+      .sort((left, right) => weaponStrength(right.weapon, config) - weaponStrength(left.weapon, config));
+    for (const fighter of reach) {
+      used.add(fighter.name);
+      dest[fighter.name] = cell;
+      if (enough()) break;
+    }
+    if (enough()) continue;
+
+    const distant = defense
+      .filter((fighter) => !used.has(fighter.name))
+      .sort((left, right) => (
+        cellDistance(left.point, cell, config) - cellDistance(right.point, cell, config)
+        || weaponStrength(right.weapon, config) - weaponStrength(left.weapon, config)
+      ));
+    for (const fighter of distant) {
+      const next = stepToward(fighter.point, cell, config);
+      if (next === fighter.point) continue;
+      used.add(fighter.name);
+      dest[fighter.name] = next;
+      // На чужой клетке ничья не спасает, поэтому тянем на одного больше, чем у них.
+      if (!goal.save && goingTo(defense, dest, cell).length > attackers.length) break;
+    }
   }
 
   return {

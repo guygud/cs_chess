@@ -118,13 +118,24 @@ function living(fighters, cellId, side) {
   ));
 }
 
-function sidePower(group, cellId, side, owned, penalty, stayed, config) {
-  const raw = group.reduce((sum, fighter) => {
-    const base = weaponStrength(fighter.weapon, config);
-    const stood = stayed.has(fighter.name) && owned[cellId] === side;
-    return sum + (stood ? base * config.rules.holdMultiplier : base);
-  }, 0);
-  return Math.max(0, raw - penalty);
+function personStrength(fighter, cellId, side, owned, stayed, config) {
+  const base = weaponStrength(fighter.weapon, config);
+  const stood = (typeof stayed === 'function'
+    ? stayed(fighter)
+    : stayed.has(fighter.name)) && owned[cellId] === side;
+  return stood ? base * config.rules.holdMultiplier : base;
+}
+
+// Дымовая бьёт по каждому в клетке. Стреляют только первые stackShooters: угол узкий.
+export function sidePower(group, cellId, side, owned, smokePerPerson, stayed, config = CONFIG) {
+  const parts = group.map((fighter) => Math.max(0, personStrength(fighter, cellId, side, owned, stayed, config) - smokePerPerson));
+  parts.sort((left, right) => right - left);
+  const full = config.rules.stackFull;
+  const extra = config.rules.stackExtra;
+  const shooters = config.rules.stackShooters ?? parts.length;
+  return parts
+    .slice(0, shooters)
+    .reduce((sum, value, index) => sum + (index < full ? value : value * extra), 0);
 }
 
 function weakest(group) {
@@ -142,6 +153,100 @@ function strike(fighter) {
   }
   fighter.alive = false;
   return 'dead';
+}
+
+function resolveContact(attackGroup, defenseGroup, {
+  cellId = null,
+  owned = null,
+  stayed = new Set(),
+  smokes = { attack: 0, defense: 0 },
+  flashes = { attack: false, defense: false },
+  config = CONFIG,
+  clash = false,
+  endpoints = null,
+} = {}) {
+  const attackFinal = sidePower(attackGroup, cellId || endpoints?.[0] || config.cellOrder[0], 'attack', owned || {}, smokes.attack, stayed, config);
+  const defenseFinal = sidePower(defenseGroup, cellId || endpoints?.[0] || config.cellOrder[0], 'defense', owned || {}, smokes.defense, stayed, config);
+  const present = [...attackGroup, ...defenseGroup].map((fighter) => ({
+    name: fighter.name,
+    side: fighter.side,
+    weapon: fighter.weapon,
+    died: false,
+    saved: false,
+    stood: stayed.has(fighter.name),
+  }));
+  const contact = attackGroup.length > 0 && defenseGroup.length > 0;
+  let outcome = null;
+  if (contact) {
+    const diff = compare(attackFinal, defenseFinal, config);
+    const mark = (group, mode) => {
+      for (const fighter of mode === 'all' ? group : [weakest(group)]) {
+        const card = present.find((person) => person.name === fighter.name);
+        const result = strike(fighter);
+        if (result === 'saved') card.saved = true;
+        else card.died = true;
+      }
+    };
+    const killOne = (group) => {
+      const alive = group.filter((fighter) => fighter.alive);
+      if (alive.length) mark(alive, 'one');
+    };
+    // Кто не поместился в угол, стоит в проходе и гибнет первым.
+    const killCrowd = (group, enemyPower) => {
+      if (enemyPower <= 0) return;
+      const shooters = config.rules.stackShooters ?? group.length;
+      const queue = [...group].sort((left, right) => (
+        weaponStrength(right.weapon, config) - weaponStrength(left.weapon, config)
+        || left.name.localeCompare(right.name, 'ru')
+      ));
+      for (const fighter of queue.slice(shooters)) {
+        if (!fighter.alive) continue;
+        mark([fighter], 'all');
+      }
+    };
+    if (diff === 0 && flashes.attack !== flashes.defense) {
+      const winner = flashes.attack ? 'attack' : 'defense';
+      mark(winner === 'attack' ? defenseGroup : attackGroup, 'all');
+      outcome = winner;
+    } else if (diff === 0) {
+      killCrowd(attackGroup, defenseFinal);
+      killCrowd(defenseGroup, attackFinal);
+      killOne(attackGroup);
+      killOne(defenseGroup);
+      outcome = clash ? null : (owned?.[cellId] || 'defense');
+    } else {
+      const winner = diff > 0 ? 'attack' : 'defense';
+      const losers = winner === 'attack' ? defenseGroup : attackGroup;
+      const winners = winner === 'attack' ? attackGroup : defenseGroup;
+      const loserPower = winner === 'attack' ? defenseFinal : attackFinal;
+      mark(losers, 'all');
+      const flash = winner === 'attack' ? flashes.attack : flashes.defense;
+      if (!flash) {
+        killCrowd(winners, loserPower);
+        if (winners.filter((fighter) => fighter.alive).length > 1) killOne(winners);
+      }
+      outcome = winner;
+    }
+  }
+  return {
+    point: cellId,
+    endpoints,
+    clash,
+    contact,
+    attackFinal,
+    defenseFinal,
+    attackCount: attackGroup.length,
+    defenseCount: defenseGroup.length,
+    outcome,
+    present,
+    smoke: smokes,
+    flash: flashes,
+    owned: cellId ? (owned?.[cellId] || null) : null,
+  };
+}
+
+function edgeKey(a, b) {
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
 
 function takeStock(stock, type) {
@@ -229,6 +334,7 @@ export function resolveMove(round, orders, config = CONFIG) {
   const state = cloneState(round);
   state.move += 1;
   const stayed = new Set();
+  const plans = [];
 
   for (const fighter of state.fighters) {
     if (!fighter.alive) continue;
@@ -237,8 +343,49 @@ export function resolveMove(round, orders, config = CONFIG) {
     if (!canStep(fighter.point, to, config)) {
       fail(`${fighter.name} не может шагнуть из ${fighter.point} в ${to}`);
     }
+    plans.push({ fighter, from: fighter.point, to });
     if (to === fighter.point) stayed.add(fighter.name);
-    fighter.point = to;
+  }
+
+  const fights = {};
+  const byEdge = new Map();
+  for (const plan of plans) {
+    if (plan.from === plan.to) continue;
+    const key = edgeKey(plan.from, plan.to);
+    if (!byEdge.has(key)) byEdge.set(key, []);
+    byEdge.get(key).push(plan);
+  }
+
+  // Встречные шаги по одной связи — стычка на дороге, без стойки.
+  for (const [key, group] of byEdge) {
+    const [left, right] = key.split('|');
+    const towardRight = (side) => group.filter((plan) => (
+      plan.fighter.side === side && plan.from === left && plan.to === right
+    ));
+    const towardLeft = (side) => group.filter((plan) => (
+      plan.fighter.side === side && plan.from === right && plan.to === left
+    ));
+    const pairs = [
+      [towardRight('attack'), towardLeft('defense')],
+      [towardLeft('attack'), towardRight('defense')],
+    ];
+    for (const [attackPlans, defensePlans] of pairs) {
+      if (!attackPlans.length || !defensePlans.length) continue;
+      const attackGroup = attackPlans.map((plan) => plan.fighter);
+      const defenseGroup = defensePlans.map((plan) => plan.fighter);
+      const fight = resolveContact(attackGroup, defenseGroup, {
+        stayed: new Set(),
+        owned: {},
+        config,
+        clash: true,
+        endpoints: [left, right],
+      });
+      fights[`clash:${key}:${attackPlans[0].from}>${attackPlans[0].to}`] = fight;
+    }
+  }
+
+  for (const plan of plans) {
+    if (plan.fighter.alive) plan.fighter.point = plan.to;
   }
 
   const thrown = { attack: [], defense: [] };
@@ -257,7 +404,6 @@ export function resolveMove(round, orders, config = CONFIG) {
     }
   }
 
-  const fights = {};
   for (const cellId of config.cellOrder) {
     const attackGroup = living(state.fighters, cellId, 'attack');
     const defenseGroup = living(state.fighters, cellId, 'defense');
@@ -270,63 +416,14 @@ export function resolveMove(round, orders, config = CONFIG) {
         if (item.type === 'flash') flashes[side] = true;
       }
     }
-    const attackFinal = sidePower(attackGroup, cellId, 'attack', state.owned, smokes.attack, stayed, config);
-    const defenseFinal = sidePower(defenseGroup, cellId, 'defense', state.owned, smokes.defense, stayed, config);
-    const present = [...attackGroup, ...defenseGroup].map((fighter) => ({
-      name: fighter.name,
-      side: fighter.side,
-      weapon: fighter.weapon,
-      died: false,
-      saved: false,
-      stood: stayed.has(fighter.name),
-    }));
-    const contact = attackGroup.length > 0 && defenseGroup.length > 0;
-    let outcome = null;
-    if (contact) {
-      const diff = compare(attackFinal, defenseFinal, config);
-      const mark = (group, mode) => {
-        for (const fighter of mode === 'all' ? group : [weakest(group)]) {
-          const card = present.find((person) => person.name === fighter.name);
-          const result = strike(fighter);
-          if (result === 'saved') card.saved = true;
-          else card.died = true;
-        }
-      };
-      const killOne = (group) => {
-        const alive = group.filter((fighter) => fighter.alive);
-        if (alive.length) mark(alive, 'one');
-      };
-      if (diff === 0 && flashes.attack !== flashes.defense) {
-        const winner = flashes.attack ? 'attack' : 'defense';
-        mark(winner === 'attack' ? defenseGroup : attackGroup, 'all');
-        outcome = winner;
-      } else if (diff === 0) {
-        killOne(attackGroup);
-        killOne(defenseGroup);
-        outcome = state.owned[cellId] || 'defense';
-      } else {
-        const winner = diff > 0 ? 'attack' : 'defense';
-        const losers = winner === 'attack' ? defenseGroup : attackGroup;
-        const winners = winner === 'attack' ? attackGroup : defenseGroup;
-        mark(losers, 'all');
-        const flash = winner === 'attack' ? flashes.attack : flashes.defense;
-        if (!flash && winners.length > 1) killOne(winners);
-        outcome = winner;
-      }
-    }
-    fights[cellId] = {
-      point: cellId,
-      contact,
-      attackFinal,
-      defenseFinal,
-      attackCount: attackGroup.length,
-      defenseCount: defenseGroup.length,
-      outcome,
-      present,
-      smoke: smokes,
-      flash: flashes,
-      owned: state.owned[cellId] || null,
-    };
+    fights[cellId] = resolveContact(attackGroup, defenseGroup, {
+      cellId,
+      owned: state.owned,
+      stayed,
+      smokes,
+      flashes,
+      config,
+    });
   }
 
   const nextOwned = { ...state.owned };
@@ -393,32 +490,64 @@ export function playRound(attack, defense, scripts, config = CONFIG) {
   return { state, log };
 }
 
-export function remember(memory, step, side) {
+export function visibleCells(fighters, side, config = CONFIG) {
+  const cells = new Set();
+  for (const fighter of fighters) {
+    if (!fighter.alive || fighter.side !== side) continue;
+    cells.add(fighter.point);
+    for (const next of neighbors(fighter.point, config)) cells.add(next);
+  }
+  return cells;
+}
+
+export function remember(memory, step, side, config = CONFIG) {
   const next = {};
   for (const [name, info] of Object.entries(memory || {})) next[name] = { ...info };
   for (const fight of Object.values(step.fights)) {
     if (!fight.contact) continue;
     for (const person of fight.present) {
       if (person.side === side) continue;
-      next[person.name] = { point: fight.point, move: step.move, dead: person.died };
+      let seenAt = fight.point;
+      if (fight.clash) {
+        const self = step.state.fighters.find((fighter) => fighter.name === person.name);
+        seenAt = self?.point || fight.endpoints?.[0];
+      }
+      if (!seenAt) continue;
+      next[person.name] = { point: seenAt, move: step.move, dead: person.died };
     }
+  }
+  const vision = visibleCells(step.state.fighters, side, config);
+  for (const fighter of step.state.fighters) {
+    if (fighter.side === side) continue;
+    if (!vision.has(fighter.point)) continue;
+    next[fighter.name] = {
+      point: fighter.point,
+      move: step.move,
+      dead: !fighter.alive,
+    };
   }
   return next;
 }
 
-export function unfoundCount(state, memory, side, move) {
-  return state.fighters.filter((fighter) => (
-    fighter.side !== side && fighter.alive && memory[fighter.name]?.move !== move
-  )).length;
+export function unfoundCount(state, memory, side, move, config = CONFIG) {
+  const vision = visibleCells(state.fighters, side, config);
+  return state.fighters.filter((fighter) => {
+    if (fighter.side === side || !fighter.alive) return false;
+    if (vision.has(fighter.point)) return false;
+    if (memory[fighter.name]?.move === move) return false;
+    return true;
+  }).length;
 }
 
-export function shadowMarks(fighters, memory, side, move) {
+export function shadowMarks(fighters, memory, side, move, config = CONFIG) {
+  const vision = visibleCells(fighters, side, config);
   return fighters.filter((fighter) => (
     fighter.side !== side
     && fighter.alive
     && memory[fighter.name]
     && !memory[fighter.name].dead
     && memory[fighter.name].move !== move
+    && !vision.has(fighter.point)
   )).map((fighter) => ({
     name: fighter.name,
     point: memory[fighter.name].point,

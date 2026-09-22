@@ -11,7 +11,8 @@ function countWord(count) {
 
 export function resultText(fight) {
   if (!fight?.contact) return '';
-  const bits = [`${formatStrength(fight.attackFinal)} против ${formatStrength(fight.defenseFinal)}.`];
+  const prefix = fight.clash ? 'Встречка на дороге. ' : '';
+  const bits = [`${prefix}${formatStrength(fight.attackFinal)} против ${formatStrength(fight.defenseFinal)}.`];
   const enemyDead = fight.present.filter((person) => person.side === 'defense' && person.died);
   const ownDead = fight.present.filter((person) => person.side === 'attack' && person.died);
   if (enemyDead.length > 1) bits.push(`Их ${countWord(enemyDead.length)} легли.`);
@@ -38,7 +39,7 @@ export function cellNote(cellId, step, truth) {
   const fight = step?.fights[cellId];
   if (fight && (truth || fight.contact)) {
     const smoke = (fight.smoke.attack || 0) + (fight.smoke.defense || 0);
-    if (smoke) bits.push(`Дымовая −${formatStrength(smoke)}.`);
+    if (smoke) bits.push(`Дымовая −${formatStrength(smoke)} каждому.`);
     if (fight.flash.attack || fight.flash.defense) bits.push('Световая в этой клетке.');
   }
   if (step?.planted === cellId) bits.push('Бомба поставлена.');

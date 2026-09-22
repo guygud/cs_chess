@@ -1,5 +1,5 @@
 import { CONFIG } from './config.js';
-import { loadoutCost, canStep, neighbors, unfoundCount, shadowMarks } from './engine.js';
+import { loadoutCost, canStep, neighbors, unfoundCount, shadowMarks, sidePower, visibleCells } from './engine.js';
 import { cellBox, mapMarkup } from './board.js';
 import { bindDrag } from './dnd.js';
 import { cellNote, endText, formatStrength, resultText } from './timeline.js';
@@ -53,12 +53,13 @@ function rulesBlock() {
       <summary>Правила</summary>
       <ul>
         <li>Матч до\u00A0${CONFIG.rules.winsNeeded} побед и\u00A0не больше ${CONFIG.rules.maxRounds} раундов. В\u00A0раунде ${CONFIG.rules.movesPerRound} хода. Обе стороны ходят одновременно и\u00A0вслепую. На\u00A0закуп ${CONFIG.ui.buySeconds} секунд, на\u00A0ход ${CONFIG.ui.moveSeconds}. Время вышло\u00A0— уходит то, что уже стоит.</li>
-        <li>Шаг только в\u00A0соседнюю клетку или на\u00A0месте. Вы начинаете на\u00A0Т-спавне, бот на\u00A0КТ-спавне. До\u00A0плента вам три шага, защите два.</li>
+        <li>Шаг только в\u00A0соседнюю клетку или на\u00A0месте. Вы начинаете на\u00A0Т-спавне, бот на\u00A0КТ-спавне. До\u00A0плента вам три шага, защите два. Если бежите навстречу по\u00A0одной связи\u00A0— стычка на\u00A0дороге, без множителя стойки; выжившие доходят.</li>
         <li>Пистолет даёт 1, ${esc(smg.name)} ${smg.strength}, ${esc(rifle.name)} ${rifle.strength}. ${esc(CONFIG.armor.name)} силы не даёт и\u00A0снимает одну смерть за\u00A0раунд.</li>
         <li>Проходные клетки с\u00A0самого начала у\u00A0защиты, пленты ваши. Множитель ×${hold} только у\u00A0того, кто стоит в\u00A0своей клетке, а\u00A0не пришёл. Где встретились, слабые гибнут все. У\u00A0сильных, если их двое и\u00A0больше, погибает один. Кто выиграл в\u00A0одиночку, остаётся жив. При равенстве клетка остаётся у\u00A0хозяина, и\u00A0каждая сторона теряет одного. Отстоитесь в\u00A0чужой клетке одни\u00A0— со\u00A0следующего хода она ваша.</li>
+        <li>В\u00A0клетке стреляют трое: двое в\u00A0полную силу, третий вполсилы. Остальные стоят в\u00A0проходе\u00A0— в\u00A0счёт не идут, а\u00A0в\u00A0бою гибнут первыми. Толпой в\u00A0одну клетку лучше не ходить.</li>
         <li>Бомба ставится, когда вы живы на\u00A0пленте и\u00A0защиты там нет. Потом защита может обезвредить, если займёт клетку одна. После четвёртого хода неснятая бомба\u00A0— ваш раунд. Без бомбы побеждает, у\u00A0кого больше живых. Поровну\u00A0— защита.</li>
-        <li>Гранаты списываются в\u00A0начале раунда. Бросить можно любым ходом, в\u00A0свою клетку или соседнюю. Не бросили\u00A0— сгорели. Дымовая снимает ${CONFIG.utility.smoke.penalty}. Световая: победа без потерь, при равенстве клетка ваша.</li>
-        <li>Чужих видно только в\u00A0клетке, где на\u00A0этом ходу был контакт. Разбор после раунда показывает всё.</li>
+        <li>Гранаты списываются в\u00A0начале раунда. Бросить можно любым ходом, в\u00A0свою клетку или соседнюю. Не бросили\u00A0— сгорели. Дымовая снимает ${CONFIG.utility.smoke.penalty} силы у\u00A0каждого противника в\u00A0клетке. Световая: победа без потерь, при равенстве клетка ваша.</li>
+        <li>Чужих видно в\u00A0своей клетке и\u00A0в\u00A0соседних. Разбор после раунда показывает всё.</li>
       </ul>
     </details>
   `;
@@ -82,18 +83,24 @@ function ownPower(state, cellId) {
     const to = state.draft.to[fighter.name] || fighter.point;
     return to === cellId;
   });
-  const raw = people.reduce((sum, fighter) => {
-    const base = CONFIG.weapons[fighter.weapon].strength;
-    const stood = (state.draft.to[fighter.name] || fighter.point) === fighter.point
-      && state.roundState.owned[cellId] === 'attack';
-    return sum + (stood ? base * CONFIG.rules.holdMultiplier : base);
-  }, 0);
-  return raw;
+  const stayed = new Set(
+    people
+      .filter((fighter) => (state.draft.to[fighter.name] || fighter.point) === fighter.point)
+      .map((fighter) => fighter.name),
+  );
+  return sidePower(people, cellId, 'attack', state.roundState.owned, 0, stayed, CONFIG);
 }
 
 function sightMove(state) {
-  if (!state.roundState || state.phase === 'buy' || state.phase === 'move') return -1;
+  if (!state.roundState || state.phase === 'buy') return -1;
+  if (state.phase === 'move') return state.roundState.move;
   return state.roundState.move;
+}
+
+function attackVision(state) {
+  const fighters = stepOf(state)?.state?.fighters || state.roundState?.fighters;
+  if (!fighters) return new Set();
+  return visibleCells(fighters, 'attack', CONFIG);
 }
 
 function stepOf(state) {
@@ -111,25 +118,33 @@ function peopleInCell(state, cellId) {
     }));
   }
   if (state.phase === 'move') {
+    const vision = attackVision(state);
     const chips = [];
     for (const fighter of state.roundState.fighters) {
-      if (fighter.side !== 'attack') continue;
-      const to = fighter.alive ? (state.draft.to[fighter.name] || fighter.point) : fighter.point;
-      if (to !== cellId) continue;
-      const index = state.draft.fighters.findIndex((item) => item.name === fighter.name);
-      const stood = fighter.alive && to === fighter.point && state.roundState.owned[cellId] === 'attack';
-      chips.push(chip({ ...fighter, stood }, fighter.alive ? `fighter-${index}` : ''));
+      if (fighter.side === 'attack') {
+        const to = fighter.alive ? (state.draft.to[fighter.name] || fighter.point) : fighter.point;
+        if (to !== cellId) continue;
+        const index = state.draft.fighters.findIndex((item) => item.name === fighter.name);
+        const stood = fighter.alive && to === fighter.point && state.roundState.owned[cellId] === 'attack';
+        chips.push(chip({ ...fighter, stood }, fighter.alive ? `fighter-${index}` : ''));
+        continue;
+      }
+      if (!fighter.alive || fighter.point !== cellId) continue;
+      if (!vision.has(cellId)) continue;
+      chips.push(chip({ ...fighter, stood: false }, ''));
     }
     return chips.map((html) => ({ html }));
   }
   if (!step) return [];
   const truth = state.phase === 'review';
   const fight = step.fights[cellId];
+  const vision = attackVision(state);
   const chips = [];
   for (const fighter of step.state.fighters) {
     if (fighter.point !== cellId) continue;
     if (fighter.side === 'defense' && !truth) {
-      const seen = fight?.contact && fight.present.some((person) => person.name === fighter.name);
+      const seen = (fight?.contact && fight.present.some((person) => person.name === fighter.name))
+        || vision.has(cellId);
       if (!seen) continue;
     }
     const card = fight?.present?.find((person) => person.name === fighter.name);
@@ -173,13 +188,21 @@ function bombHere(state, cellId) {
   return round?.bomb?.point === cellId && !round.defused;
 }
 
+function clashesFor(step, cellId) {
+  if (!step) return [];
+  return Object.values(step.fights).filter((fight) => (
+    fight.clash && fight.contact && fight.endpoints?.includes(cellId)
+  ));
+}
+
 function cellsMarkup(state) {
   return CONFIG.cellOrder.map((cellId) => {
     const box = cellBox(cellId);
     const cell = CONFIG.map.cells[cellId];
     const step = stepOf(state);
     const fight = step?.fights[cellId];
-    const hot = fight?.contact ? ' hot' : '';
+    const road = clashesFor(step, cellId);
+    const hot = fight?.contact || road.length ? ' hot' : '';
     const plant = cell.plant ? ' plant' : '';
     const bomb = bombHere(state, cellId) ? ' bombed' : '';
     const people = peopleInCell(state, cellId).map((item) => item.html).join('');
@@ -195,7 +218,11 @@ function cellsMarkup(state) {
       : [];
     const throwLine = thrown.length ? `<p class="cell-throw">${esc(thrown.join(', '))}</p>` : '';
     const note = step ? cellNote(cellId, step, state.phase === 'review') : '';
-    const result = step && (state.phase === 'review' || fight?.contact) ? resultText(fight) : '';
+    const showFight = state.phase === 'review' || fight?.contact;
+    const result = step && showFight ? resultText(fight) : '';
+    const roadLine = step && (state.phase === 'review' || road.length)
+      ? road.map((item) => resultText(item)).filter(Boolean).map((text) => `<p class="cell-result">${esc(text)}</p>`).join('')
+      : '';
     const bombLine = bombHere(state, cellId) ? '<p class="cell-bomb">Бомба</p>' : '';
     return `
       <div class="cell${hot}${plant}${bomb}" data-zone="${esc(cellId)}" style="left:${box.left}%;top:${box.top}%;width:${box.width}%;height:${box.height}%">
@@ -207,6 +234,7 @@ function cellsMarkup(state) {
         ${throwLine}
         ${bombLine}
         ${result ? `<p class="cell-result">${esc(result)}</p>` : ''}
+        ${roadLine}
         ${note ? `<p class="cell-note">${esc(note)}</p>` : ''}
       </div>
     `;
@@ -311,7 +339,7 @@ function panel(state) {
     return `
       <section class="panel">
         <h2>Ход ${step.move}</h2>
-        <p class="hint">${esc(over ? endText(state.roundState) : 'Контакт только в\u00A0подсвеченных клетках. Остальные чужие не видны.')}</p>
+        <p class="hint">${esc(over ? endText(state.roundState) : 'Чужих видно у\u00A0себя и\u00A0в\u00A0соседних клетках. Контакт подсвечен.')}</p>
         <p class="unfound">Не найдено: ${missing}</p>
         <button type="button" id="continue">${over ? 'Как было на\u00A0самом деле' : `Ход ${step.move + 1}`}</button>
         ${rulesBlock()}
