@@ -321,6 +321,187 @@ function rotatorInfo(defense, pointId, config) {
   return { name: rotator.name, weapon: rotator.weapon, point: pointId, strength };
 }
 
+function withoutSmoke(utility) {
+  return utility.filter((item) => item.type !== 'smoke');
+}
+
+function packPoint(snapshot, control) {
+  return {
+    attackStrength: snapshot.attackStrength,
+    defenseBeforeUtility: snapshot.defenseBeforeUtility,
+    defenseFinal: snapshot.defenseFinal,
+    smokePenalty: snapshot.smokePenalty,
+    flash: snapshot.flash,
+    control: control ?? null,
+  };
+}
+
+function packBoard(attack, defense, utility, config, controls) {
+  const points = {};
+  for (const id of config.pointOrder) {
+    points[id] = packPoint(evaluatePoint(id, attack, defense, utility, config), controls[id]);
+  }
+  return points;
+}
+
+function packFighters(attack, defense, deadNames) {
+  const rows = [];
+  for (const fighter of attack) {
+    rows.push({
+      name: fighter.name,
+      side: 'attack',
+      weapon: fighter.weapon,
+      point: fighter.point,
+      rotator: false,
+      alive: !deadNames.has(fighter.name),
+    });
+  }
+  for (const fighter of defense) {
+    rows.push({
+      name: fighter.name,
+      side: 'defense',
+      weapon: fighter.weapon,
+      point: fighter.point,
+      rotator: Boolean(fighter.rotator),
+      alive: !deadNames.has(fighter.name),
+    });
+  }
+  return rows;
+}
+
+function grenadeMarks(utility) {
+  return {
+    smokes: utility.filter((item) => item.type === 'smoke').map((item) => item.point),
+    flashes: utility.filter((item) => item.type === 'flash').map((item) => item.point),
+  };
+}
+
+function buildStages({
+  atStart,
+  atTransfer,
+  atEnd,
+  mid,
+  midPoint,
+  points,
+  transfers,
+  utility,
+  rotator,
+  config,
+}) {
+  const marks = grenadeMarks(utility);
+  const bare = withoutSmoke(utility);
+  const noControl = {};
+  const revealPoints = packBoard(atStart.attack, atStart.defense, bare, config, noControl);
+  const midControls = { ...noControl, [mid]: midPoint.control };
+  const midPoints = packBoard(atStart.attack, atStart.defense, bare, config, midControls);
+  midPoints[mid] = packPoint(midPoint, midPoint.control);
+
+  const transferPoints = packBoard(atTransfer.attack, atTransfer.defense, bare, config, midControls);
+  const rotatorControls = { ...midControls };
+  const rotatorPoints = packBoard(atEnd.attack, atEnd.defense, bare, config, rotatorControls);
+
+  const finalControls = { ...midControls };
+  for (const id of siteIds(config)) {
+    finalControls[id] = points[id].control;
+  }
+  const smoked = packBoard(atEnd.attack, atEnd.defense, utility, config, {});
+  function withControls(controls) {
+    const next = {};
+    for (const id of config.pointOrder) {
+      next[id] = { ...smoked[id], control: controls[id] ?? null };
+    }
+    return next;
+  }
+
+  const midDead = new Set(midPoint.frags.map((frag) => frag.victim));
+  const dead = new Set(midDead);
+
+  const stages = [
+    {
+      id: 'reveal',
+      focus: null,
+      fighters: packFighters(atStart.attack, atStart.defense, new Set()),
+      points: revealPoints,
+      frags: [],
+      transfer: null,
+      rotator,
+      ...marks,
+    },
+    {
+      id: 'mid',
+      focus: mid,
+      fighters: packFighters(atStart.attack, atStart.defense, midDead),
+      points: midPoints,
+      frags: midPoint.frags,
+      transfer: null,
+      rotator,
+      ...marks,
+    },
+    {
+      id: 'transfer',
+      focus: transfers[0] ? transfers[0].to : mid,
+      fighters: packFighters(atTransfer.attack, atTransfer.defense, midDead),
+      points: transferPoints,
+      frags: [],
+      transfer: transfers[0] || null,
+      rotator,
+      ...marks,
+    },
+    {
+      id: 'rotator',
+      focus: rotator.point,
+      fighters: packFighters(atEnd.attack, atEnd.defense, midDead),
+      points: rotatorPoints,
+      frags: [],
+      transfer: transfers[0] || null,
+      rotator,
+      ...marks,
+    },
+    {
+      id: 'utility',
+      focus: marks.smokes[0] || marks.flashes[0] || null,
+      fighters: packFighters(atEnd.attack, atEnd.defense, midDead),
+      points: withControls(midControls),
+      frags: [],
+      transfer: transfers[0] || null,
+      rotator,
+      ...marks,
+    },
+  ];
+
+  const revealedSites = [];
+  for (const id of siteIds(config)) {
+    for (const frag of points[id].frags) dead.add(frag.victim);
+    revealedSites.push(id);
+    const controls = { ...midControls };
+    for (const pointId of revealedSites) controls[pointId] = points[pointId].control;
+    const stagePoints = withControls(controls);
+    stages.push({
+      id: `site${id}`,
+      focus: id,
+      fighters: packFighters(atEnd.attack, atEnd.defense, dead),
+      points: stagePoints,
+      frags: points[id].frags,
+      transfer: transfers[0] || null,
+      rotator,
+      ...marks,
+    });
+  }
+
+  stages.push({
+    id: 'result',
+    focus: null,
+    fighters: packFighters(atEnd.attack, atEnd.defense, dead),
+    points: withControls(finalControls),
+    frags: [],
+    transfer: transfers[0] || null,
+    rotator,
+    ...marks,
+  });
+
+  return stages;
+}
+
 export function resolveRound(input, config = CONFIG) {
   const attack = cloneFighters(input.attack.fighters);
   const defense = cloneFighters(input.defense.fighters);
@@ -336,6 +517,10 @@ export function resolveRound(input, config = CONFIG) {
   }
 
   const mid = midId(config);
+  const atStart = {
+    attack: cloneFighters(attack),
+    defense: cloneFighters(defense),
+  };
   const midRaw = evaluatePoint(mid, attack, defense, utility, config);
   const midControl = controlOfMid(midRaw, config);
   const midPoint = withFrags(midRaw, midControl, config);
@@ -361,10 +546,18 @@ export function resolveRound(input, config = CONFIG) {
       'defense',
     );
   }
+  const atTransfer = {
+    attack: cloneFighters(attack),
+    defense: cloneFighters(defense),
+  };
 
   const rotatorPoint = heavierAttackSite(attack, config);
   const rotator = defense.find((fighter) => fighter.rotator);
   if (rotator && rotatorPoint) rotator.point = rotatorPoint;
+  const atEnd = {
+    attack: cloneFighters(attack),
+    defense: cloneFighters(defense),
+  };
 
   const points = { [mid]: midPoint };
   const takenSites = [];
@@ -376,13 +569,26 @@ export function resolveRound(input, config = CONFIG) {
   }
 
   const killfeed = config.pointOrder.flatMap((id) => points[id].frags);
+  const rotatorState = rotatorInfo(defense, rotatorPoint, config);
   return {
     winner: takenSites.length ? 'attack' : 'defense',
     takenSites,
     midPoint: mid,
     points,
     transfers,
-    rotator: rotatorInfo(defense, rotatorPoint, config),
+    rotator: rotatorState,
     killfeed,
+    stages: buildStages({
+      atStart,
+      atTransfer,
+      atEnd,
+      mid,
+      midPoint,
+      points,
+      transfers,
+      utility,
+      rotator: rotatorState,
+      config,
+    }),
   };
 }

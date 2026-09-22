@@ -4,6 +4,36 @@ export const CONFIG = {
   map: {
     id: 'dust2',
     name: 'Dust2',
+    viewBox: { x: 0, y: 0, width: 640, height: 400 },
+    tokenColumns: 2,
+    tokenStep: 72,
+    spawnAnchor: { x: 130, y: 372 },
+    ground: 'M 12 12 H 628 V 388 H 12 Z',
+    decor: [
+      'M 80 340 H 12',
+      'M 300 300 H 400 V 360 H 300 Z',
+      'M 520 360 H 470 V 388',
+    ],
+    zones: {
+      A: {
+        label: 'A · long',
+        path: 'M 12 12 H 220 V 340 H 80 V 388 H 12 Z',
+        anchor: { x: 28, y: 56 },
+        labelAt: { x: 150, y: 36 },
+      },
+      MID: {
+        label: 'Мид',
+        path: 'M 232 12 H 424 V 200 H 390 V 388 H 266 V 200 H 232 Z',
+        anchor: { x: 248, y: 48 },
+        labelAt: { x: 360, y: 36 },
+      },
+      B: {
+        label: 'B · tunnels',
+        path: 'M 436 12 H 628 V 360 H 520 V 388 H 470 V 360 H 436 Z',
+        anchor: { x: 452, y: 56 },
+        labelAt: { x: 560, y: 36 },
+      },
+    },
   },
 
   points: {
@@ -60,6 +90,8 @@ export const CONFIG = {
 
   ui: {
     revealStepMs: 500,
+    playbackStepMs: 1100,
+    dragThreshold: 8,
     defaultAttackPoints: ['A', 'A', 'MID', 'B', 'B'],
     defaultUtilityPoint: 'A',
     defaultMidTransfer: 'A',

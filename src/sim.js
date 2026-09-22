@@ -219,6 +219,69 @@ function selfCheck() {
   expect(planDefense(full - 1, CONFIG, () => 0).weapon === 'pistol', 'Почти полной суммы на винтовки не хватает');
   expect(planDefense(full, CONFIG, () => 0).fighters.every((item) => item.weapon !== 'awp'), 'Бот не покупает AWP');
 
+  const staged = play(
+    named('t', CONFIG.rules.attackFighters, 'A'),
+    defenseGroup({ a: 2, mid: 1, b: 1 }),
+    [{ type: 'smoke', point: 'A' }],
+  );
+  const stageIds = staged.stages.map((stage) => stage.id);
+  expect(
+    stageIds.join(',') === 'reveal,mid,transfer,rotator,utility,siteA,siteB,result',
+    `Порядок стадий: ${stageIds.join(',')}`,
+  );
+  const last = staged.stages.at(-1);
+  const midStage = staged.stages.find((stage) => stage.id === 'mid');
+  const midNames = midStage.fighters
+    .filter((fighter) => fighter.point === 'MID')
+    .map((fighter) => fighter.name)
+    .sort()
+    .join('|');
+  const midResultNames = staged.points.MID.attackers
+    .concat(staged.points.MID.defenders)
+    .map((fighter) => fighter.name)
+    .sort()
+    .join('|');
+  expect(midNames === midResultNames, 'Состав мида на стадии боя совпадает');
+  expect(
+    midStage.points.MID.attackStrength === staged.points.MID.attackStrength
+      && midStage.points.MID.defenseFinal === staged.points.MID.defenseFinal,
+    'Числа мида на стадии боя совпадают',
+  );
+  for (const id of ['A', 'B']) {
+    expect(
+      last.points[id].attackStrength === staged.points[id].attackStrength
+        && last.points[id].defenseFinal === staged.points[id].defenseFinal,
+      `Финал стадии совпадает с точкой ${id}`,
+    );
+    const stageNames = last.fighters
+      .filter((fighter) => fighter.point === id)
+      .map((fighter) => fighter.name)
+      .sort()
+      .join('|');
+    const resultNames = staged.points[id].attackers
+      .concat(staged.points[id].defenders)
+      .map((fighter) => fighter.name)
+      .sort()
+      .join('|');
+    expect(stageNames === resultNames, `Состав на ${id} совпадает`);
+  }
+  const stageFragKey = staged.stages
+    .flatMap((stage) => stage.frags)
+    .map((frag) => `${frag.point}:${frag.killer}:${frag.victim}`)
+    .sort()
+    .join(',');
+  const killfeedKey = staged.killfeed
+    .map((frag) => `${frag.point}:${frag.killer}:${frag.victim}`)
+    .sort()
+    .join(',');
+  expect(stageFragKey === killfeedKey, 'Фраги стадий совпадают с килл-фидом');
+  const beforeSmoke = staged.stages.find((stage) => stage.id === 'rotator').points.A.defenseFinal;
+  const afterSmoke = staged.stages.find((stage) => stage.id === 'utility').points.A.defenseFinal;
+  expect(
+    afterSmoke === Math.max(0, beforeSmoke - CONFIG.utility.smoke.defensePenalty),
+    'Смоук на стадии утилиты снижает защиту сайта',
+  );
+
   expectThrow(
     () => play(
       named('t', CONFIG.rules.attackFighters, 'A'),
