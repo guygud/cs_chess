@@ -4,61 +4,47 @@ export const CONFIG = {
   map: {
     id: 'dust2',
     name: 'Dust2',
-    viewBox: { x: 0, y: 0, width: 640, height: 400 },
-    tokenColumns: 2,
-    tokenStep: 72,
-    spawnAnchor: { x: 130, y: 372 },
-    ground: 'M 12 12 H 628 V 388 H 12 Z',
-    decor: [
-      'M 80 340 H 12',
-      'M 300 300 H 400 V 360 H 300 Z',
-      'M 520 360 H 470 V 388',
-    ],
-    zones: {
-      A: {
-        label: 'A · long',
-        path: 'M 12 12 H 220 V 340 H 80 V 388 H 12 Z',
-        anchor: { x: 28, y: 56 },
-        labelAt: { x: 150, y: 36 },
-      },
-      MID: {
-        label: 'Мид',
-        path: 'M 232 12 H 424 V 200 H 390 V 388 H 266 V 200 H 232 Z',
-        anchor: { x: 248, y: 48 },
-        labelAt: { x: 360, y: 36 },
-      },
-      B: {
-        label: 'B · tunnels',
-        path: 'M 436 12 H 628 V 360 H 520 V 388 H 470 V 360 H 436 Z',
-        anchor: { x: 452, y: 56 },
-        labelAt: { x: 560, y: 36 },
-      },
+    viewBox: { x: 0, y: 0, width: 640, height: 670 },
+    cells: {
+      LONG: { label: 'Лонг', x: 12, y: 10, w: 196, h: 200, owner: 'attack' },
+      PLANTA: { label: 'Плент A', x: 222, y: 10, w: 196, h: 200, plant: true, owner: 'defense' },
+      CTSPAWN: { label: 'КТ-спавн', x: 432, y: 10, w: 196, h: 200, owner: 'defense' },
+      TSPAWN: { label: 'Т-спавн', x: 12, y: 228, w: 196, h: 200, owner: 'attack' },
+      SHORT: { label: 'Шорт', x: 222, y: 228, w: 196, h: 200, owner: 'defense' },
+      PLANTB: { label: 'Плент B', x: 432, y: 228, w: 196, h: 200, plant: true, owner: 'defense' },
+      TUNNEL: { label: 'Туннель', x: 12, y: 446, w: 196, h: 200, owner: 'attack' },
+      MID: { label: 'Центр', x: 222, y: 446, w: 196, h: 200, owner: 'attack' },
     },
   },
 
-  points: {
-    A: { id: 'A', name: 'A', isSite: true, long: true },
-    MID: { id: 'MID', name: 'Мид', isSite: false, long: true },
-    B: { id: 'B', name: 'B', isSite: true, long: false },
-  },
-  pointOrder: ['A', 'MID', 'B'],
+  edges: [
+    ['TSPAWN', 'LONG'],
+    ['TSPAWN', 'MID'],
+    ['TSPAWN', 'TUNNEL'],
+    ['LONG', 'PLANTA'],
+    ['MID', 'SHORT'],
+    ['MID', 'CTSPAWN'],
+    ['SHORT', 'PLANTA'],
+    ['TUNNEL', 'PLANTB'],
+    ['PLANTA', 'CTSPAWN'],
+    ['PLANTB', 'CTSPAWN'],
+  ],
+
+  cellOrder: ['LONG', 'PLANTA', 'CTSPAWN', 'TSPAWN', 'SHORT', 'PLANTB', 'TUNNEL', 'MID'],
+  spawns: { attack: 'TSPAWN', defense: 'CTSPAWN' },
+  plantTie: 'PLANTA',
 
   weapons: {
     pistol: { id: 'pistol', name: 'Пистолет', cost: 0, strength: 1 },
-    rifle: { id: 'rifle', name: 'Винтовка', cost: 2700, strength: 2 },
-    awp: {
-      id: 'awp',
-      name: 'AWP',
-      cost: 4750,
-      longStrength: 3,
-      shortStrength: 1,
-    },
+    smg: { id: 'smg', name: 'ПП', cost: 1200, strength: 2 },
+    rifle: { id: 'rifle', name: 'Автомат', cost: 2700, strength: 3 },
   },
-  weaponOrder: ['pistol', 'rifle', 'awp'],
+  weaponOrder: ['pistol', 'smg', 'rifle'],
+  armor: { id: 'armor', name: 'Броник', cost: 800 },
 
   utility: {
-    smoke: { id: 'smoke', name: 'Смоук', cost: 300, defensePenalty: 2 },
-    flash: { id: 'flash', name: 'Флеш', cost: 200 },
+    smoke: { id: 'smoke', name: 'Дымовая', cost: 300, penalty: 2 },
+    flash: { id: 'flash', name: 'Световая', cost: 200 },
   },
   utilityOrder: ['smoke', 'flash'],
 
@@ -67,67 +53,124 @@ export const CONFIG = {
     winReward: 3000,
     lossBase: 1400,
     lossStreakStep: 500,
-    // Шаги считаются по поражениям ДО текущего раунда.
-    // 0 → 1400, 1 → 1900, 2 → 2400, 3 и дальше → 2900.
     maxLossStreakSteps: 3,
   },
 
   rules: {
     attackFighters: 5,
-    defensePlaced: 4,
-    defenseRotators: 1,
-    defenderSiteMultiplier: 1.5,
-    rotatorMultiplier: 0.5,
-    midTransferFighters: 1,
-    tieWinner: 'defense',
+    defenseFighters: 5,
+    movesPerRound: 3,
+    holdMultiplier: 1.5,
     maxUtility: 2,
     winsNeeded: 3,
     maxRounds: 5,
-    rotatorTieSite: 'A',
-    killfeedDivisor: 2,
     compareEpsilon: 1e-9,
   },
 
   ui: {
-    revealStepMs: 500,
     playbackStepMs: 1100,
     dragThreshold: 8,
-    defaultAttackPoints: ['A', 'A', 'MID', 'B', 'B'],
-    defaultUtilityPoint: 'A',
-    defaultMidTransfer: 'A',
   },
 
   rosters: {
-    attack: ['viper', 'entry', 'spark', 'lurk', 'star'],
-    defense: ['brick', 'swing', 'hold', 'watch', 'rotate'],
+    attack: ['Змей', 'Таран', 'Искра', 'Тень', 'Звезда'],
+    defense: ['Якорь', 'Сдвиг', 'Пост', 'Дозор', 'Бегун'],
   },
 
-  defenseTemplates: [
-    { id: '2-1-1', points: { A: 2, MID: 1, B: 1 }, weight: 3 },
-    { id: '1-2-1', points: { A: 1, MID: 2, B: 1 }, weight: 3 },
-    { id: '1-1-2', points: { A: 1, MID: 1, B: 2 }, weight: 3 },
-    { id: '2-2-0', points: { A: 2, MID: 2, B: 0 }, weight: 2 },
-    { id: '0-2-2', points: { A: 0, MID: 2, B: 2 }, weight: 2 },
-    { id: '2-0-2', points: { A: 2, MID: 0, B: 2 }, weight: 2 },
-    { id: '3-1-0', points: { A: 3, MID: 1, B: 0 }, weight: 1 },
-    { id: '0-1-3', points: { A: 0, MID: 1, B: 3 }, weight: 1 },
-  ],
-
-  sim: {
-    matches: 2000,
-    seed: 1,
-    midTransferToB: 0.5,
-    attackTemplates: [
-      { id: '5-0-0', points: { A: 5, MID: 0, B: 0 }, weight: 1 },
-      { id: '0-0-5', points: { A: 0, MID: 0, B: 5 }, weight: 1 },
-      { id: '0-5-0', points: { A: 0, MID: 5, B: 0 }, weight: 1 },
-      { id: '3-1-1', points: { A: 3, MID: 1, B: 1 }, weight: 2 },
-      { id: '1-1-3', points: { A: 1, MID: 1, B: 3 }, weight: 2 },
-      { id: '2-1-2', points: { A: 2, MID: 1, B: 2 }, weight: 3 },
-      { id: '4-1-0', points: { A: 4, MID: 1, B: 0 }, weight: 1 },
-      { id: '0-1-4', points: { A: 0, MID: 1, B: 4 }, weight: 1 },
-      { id: '2-2-1', points: { A: 2, MID: 2, B: 1 }, weight: 2 },
-      { id: '1-2-2', points: { A: 1, MID: 2, B: 2 }, weight: 2 },
+  routes: {
+    attack: [
+      {
+        id: 'fast-a',
+        weight: 30,
+        moves: [
+          ['LONG', 'LONG', 'LONG', 'LONG', 'LONG'],
+          ['PLANTA', 'PLANTA', 'PLANTA', 'PLANTA', 'PLANTA'],
+          ['PLANTA', 'PLANTA', 'PLANTA', 'PLANTA', 'PLANTA'],
+        ],
+      },
+      {
+        id: 'fast-b',
+        weight: 30,
+        moves: [
+          ['TUNNEL', 'TUNNEL', 'TUNNEL', 'TUNNEL', 'TUNNEL'],
+          ['PLANTB', 'PLANTB', 'PLANTB', 'PLANTB', 'PLANTB'],
+          ['PLANTB', 'PLANTB', 'PLANTB', 'PLANTB', 'PLANTB'],
+        ],
+      },
+      {
+        id: 'slow-a',
+        weight: 2,
+        moves: [
+          ['MID', 'MID', 'MID', 'MID', 'MID'],
+          ['SHORT', 'SHORT', 'SHORT', 'SHORT', 'SHORT'],
+          ['PLANTA', 'PLANTA', 'PLANTA', 'PLANTA', 'PLANTA'],
+        ],
+      },
+      {
+        id: 'split',
+        weight: 1,
+        moves: [
+          ['LONG', 'LONG', 'LONG', 'TUNNEL', 'TUNNEL'],
+          ['PLANTA', 'PLANTA', 'PLANTA', 'PLANTB', 'PLANTB'],
+          ['PLANTA', 'PLANTA', 'PLANTA', 'PLANTB', 'PLANTB'],
+        ],
+      },
+      {
+        id: 'mid',
+        weight: 2,
+        moves: [
+          ['MID', 'MID', 'MID', 'MID', 'LONG'],
+          ['MID', 'MID', 'MID', 'SHORT', 'PLANTA'],
+          ['MID', 'MID', 'MID', 'PLANTA', 'PLANTA'],
+        ],
+      },
+    ],
+    defense: [
+      {
+        id: 'hold-a',
+        weight: 30,
+        moves: [
+          ['PLANTA', 'PLANTA', 'PLANTA', 'PLANTA', 'PLANTA'],
+          ['PLANTA', 'PLANTA', 'PLANTA', 'PLANTA', 'PLANTA'],
+          ['PLANTA', 'PLANTA', 'PLANTA', 'PLANTA', 'PLANTA'],
+        ],
+      },
+      {
+        id: 'hold-b',
+        weight: 30,
+        moves: [
+          ['PLANTB', 'PLANTB', 'PLANTB', 'PLANTB', 'PLANTB'],
+          ['PLANTB', 'PLANTB', 'PLANTB', 'PLANTB', 'PLANTB'],
+          ['PLANTB', 'PLANTB', 'PLANTB', 'PLANTB', 'PLANTB'],
+        ],
+      },
+      {
+        id: 'split',
+        weight: 2,
+        moves: [
+          ['PLANTA', 'PLANTA', 'PLANTA', 'PLANTB', 'PLANTB'],
+          ['PLANTA', 'PLANTA', 'PLANTA', 'PLANTB', 'PLANTB'],
+          ['PLANTA', 'PLANTA', 'PLANTA', 'PLANTB', 'PLANTB'],
+        ],
+      },
+      {
+        id: 'mid-anchor',
+        weight: 2,
+        moves: [
+          ['MID', 'MID', 'PLANTA', 'PLANTA', 'PLANTB'],
+          ['MID', 'SHORT', 'PLANTA', 'PLANTA', 'PLANTB'],
+          ['MID', 'PLANTA', 'PLANTA', 'PLANTA', 'PLANTB'],
+        ],
+      },
+      {
+        id: 'late-long',
+        weight: 1,
+        moves: [
+          ['PLANTA', 'PLANTA', 'MID', 'PLANTB', 'CTSPAWN'],
+          ['LONG', 'PLANTA', 'SHORT', 'PLANTB', 'PLANTA'],
+          ['LONG', 'LONG', 'PLANTA', 'PLANTB', 'LONG'],
+        ],
+      },
     ],
   },
 };

@@ -1,51 +1,72 @@
 import { CONFIG } from './config.js';
 
-export function tokenPercent(pointId, index, config = CONFIG) {
-  const zone = config.map.zones[pointId];
-  if (!zone) return null;
-  const column = index % config.map.tokenColumns;
-  const row = Math.floor(index / config.map.tokenColumns);
-  const x = zone.anchor.x + column * config.map.tokenStep;
-  const y = zone.anchor.y + row * config.map.tokenStep;
+export function cellBox(cellId, config = CONFIG) {
+  const cell = config.map.cells[cellId];
+  const box = config.map.viewBox;
   return {
-    left: (x / config.map.viewBox.width) * 100,
-    top: (y / config.map.viewBox.height) * 100,
+    left: (cell.x / box.width) * 100,
+    top: (cell.y / box.height) * 100,
+    width: (cell.w / box.width) * 100,
+    height: (cell.h / box.height) * 100,
+    cx: cell.x + cell.w / 2,
+    cy: cell.y + cell.h / 2,
   };
 }
 
-export function anchorPercent(point, config = CONFIG) {
+function center(cellId, config) {
+  const box = cellBox(cellId, config);
+  return [box.cx, box.cy];
+}
+
+function rect(cellId, map) {
+  const cell = map.cells[cellId];
   return {
-    left: (point.x / config.map.viewBox.width) * 100,
-    top: (point.y / config.map.viewBox.height) * 100,
+    x: cell.x,
+    r: cell.x + cell.w,
+    b: cell.y + cell.h,
+    cx: cell.x + cell.w / 2,
+    cy: cell.y + cell.h / 2,
   };
 }
 
-function svgPath(d, className, zoneId) {
-  const zone = zoneId ? ` data-zone="${zoneId}"` : '';
-  return `<path class="${className}" d="${d}"${zone}></path>`;
+function elbowsFor(left, right, map) {
+  const key = [left, right].sort().join('-');
+  const box = map.viewBox;
+  const bottom = box.height - 10;
+  const edge = box.width - 8;
+  if (key === 'MID-TSPAWN') {
+    const spawn = rect('TSPAWN', map);
+    const mid = rect('MID', map);
+    const gap = (spawn.r + rect('SHORT', map).x) / 2;
+    return [[gap, spawn.cy], [gap, mid.cy]];
+  }
+  if (key === 'CTSPAWN-MID') {
+    const mid = rect('MID', map);
+    const ct = rect('CTSPAWN', map);
+    return [[mid.cx, bottom], [edge, bottom], [edge, ct.cy]];
+  }
+  if (key === 'PLANTB-TUNNEL') {
+    const tunnel = rect('TUNNEL', map);
+    const plant = rect('PLANTB', map);
+    return [[tunnel.cx, bottom], [edge, bottom], [edge, plant.cy]];
+  }
+  return [];
 }
 
-export function mapMarkup(focus) {
+export function mapMarkup() {
   const { map } = CONFIG;
   const box = `${map.viewBox.x} ${map.viewBox.y} ${map.viewBox.width} ${map.viewBox.height}`;
-  const zones = CONFIG.pointOrder.map((id) => {
-    const zone = map.zones[id];
-    const focused = focus === id ? ' focus' : '';
-    return svgPath(zone.path, `zone zone-${id}${focused}`, id);
+  const lines = CONFIG.edges.map(([left, right]) => {
+    const from = center(left);
+    const to = center(right);
+    const bend = elbowsFor(left, right, map);
+    const points = [from, ...bend, to].map(([x, y]) => `${x},${y}`).join(' ');
+    return `<polyline class="link" points="${points}"></polyline>`;
   }).join('');
-  const decor = map.decor.map((d) => svgPath(d, 'decor')).join('');
-  const labels = CONFIG.pointOrder.map((id) => {
-    const zone = map.zones[id];
-    return `<text class="zone-label" x="${zone.labelAt.x}" y="${zone.labelAt.y}">${zone.label}</text>`;
-  }).join('');
-  const spawn = map.spawnAnchor;
   return `
     <svg class="radar" viewBox="${box}" role="img" aria-label="${map.name}">
-      ${svgPath(map.ground, 'ground')}
-      ${decor}
-      ${zones}
-      ${labels}
-      <text class="spawn-label" x="${spawn.x}" y="${spawn.y}">T spawn</text>
+      <rect class="ground" x="0" y="0" width="${map.viewBox.width}" height="${map.viewBox.height}"></rect>
+      ${lines}
     </svg>
   `;
 }

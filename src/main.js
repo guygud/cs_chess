@@ -1,18 +1,17 @@
 import { CONFIG } from './config.js';
-import { applyRoundEconomy, loadoutCost, matchStatus, resolveRound } from './engine.js';
-import { planDefense } from './bot.js';
+import { applyRoundEconomy, canStep, createRound, loadoutCost, matchStatus, neighbors, remember, resolveMove } from './engine.js';
+import { planRound, scriptFromRoute } from './bot.js';
 import { clearTimers, render } from './ui.js';
 
 function assertConfig() {
   if (CONFIG.rosters.attack.length !== CONFIG.rules.attackFighters) {
     throw new Error('Ростер атаки не совпадает с числом бойцов');
   }
-  const defense = CONFIG.rules.defensePlaced + CONFIG.rules.defenseRotators;
-  if (CONFIG.rosters.defense.length !== defense) {
+  if (CONFIG.rosters.defense.length !== CONFIG.rules.defenseFighters) {
     throw new Error('Ростер защиты не совпадает с числом бойцов');
   }
-  for (const id of CONFIG.pointOrder) {
-    if (!CONFIG.map.zones[id]) throw new Error(`У точки ${id} нет зоны на карте`);
+  for (const id of CONFIG.cellOrder) {
+    if (!CONFIG.map.cells[id]) throw new Error(`У клетки ${id} нет места на карте`);
   }
 }
 
@@ -21,17 +20,18 @@ function freshDraft() {
     fighters: CONFIG.rosters.attack.map((name) => ({
       name,
       weapon: 'pistol',
-      point: null,
+      armor: false,
     })),
-    utility: [],
-    midTransfer: CONFIG.ui.defaultMidTransfer,
+    stock: [],
+    throws: [],
+    to: {},
     selected: null,
   };
 }
 
 function freshState() {
   return {
-    phase: 'plan',
+    phase: 'buy',
     round: 1,
     score: { attack: 0, defense: 0 },
     wallets: {
@@ -40,10 +40,14 @@ function freshState() {
     },
     lossStreak: { attack: 0, defense: 0 },
     history: [],
-    botPlan: null,
+    bot: null,
     draft: freshDraft(),
-    result: null,
-    economy: null,
+    roundState: null,
+    memory: {},
+    log: [],
+    ledger: null,
+    bill: null,
+    settled: false,
     matchWinner: null,
     error: null,
     replayIndex: 0,
@@ -55,138 +59,214 @@ let state;
 
 function beginRound() {
   clearTimers();
-  state.botPlan = planDefense(state.wallets.defense, CONFIG);
+  state.bot = null;
   state.draft = freshDraft();
-  state.result = null;
-  state.economy = null;
+  state.roundState = null;
+  state.memory = {};
+  state.log = [];
+  state.ledger = null;
+  state.bill = null;
+  state.settled = false;
   state.error = null;
-  state.phase = 'plan';
+  state.phase = 'buy';
   state.replayIndex = 0;
   state.playing = false;
   render(state, actions);
 }
 
-function parseToken(tokenId) {
-  const [kind, indexText] = tokenId.split('-');
-  return { kind, index: Number(indexText) };
+function settle() {
+  if (state.settled) return;
+  const applied = applyRoundEconomy(state.ledger, state.roundState, state.bill, CONFIG);
+  state.wallets = applied.wallets;
+  state.lossStreak = applied.lossStreak;
+  state.score = applied.score;
+  state.history.push(state.roundState.winner);
+  state.matchWinner = matchStatus(state.score, state.round, CONFIG);
+  state.settled = true;
 }
 
-function knownZone(zone) {
-  return zone === 'spawn' || Boolean(CONFIG.points[zone]);
+function moveOrders() {
+  const moves = [];
+  for (const fighter of state.roundState.fighters) {
+    if (fighter.side !== 'attack' || !fighter.alive) continue;
+    moves.push({ name: fighter.name, to: state.draft.to[fighter.name] || fighter.point });
+  }
+  const throws = [];
+  for (const item of state.draft.throws) {
+    if (!item.point) continue;
+    throws.push({ type: state.roundState.stock.attack[item.index], point: item.point });
+  }
+  return { moves, throws };
+}
+
+function throwTargets() {
+  const cells = new Set();
+  for (const fighter of state.roundState.fighters) {
+    if (fighter.side !== 'attack' || !fighter.alive) continue;
+    const at = state.draft.to[fighter.name] || fighter.point;
+    cells.add(at);
+    for (const next of neighbors(at, CONFIG)) cells.add(next);
+  }
+  return cells;
 }
 
 const actions = {
   onSelect(tokenId) {
-    state.draft.selected = state.draft.selected === tokenId ? null : tokenId;
+    const opening = state.draft.selected !== tokenId;
+    state.draft.selected = opening ? tokenId : null;
+    if (opening) document.querySelector('#app').dataset.keepMenu = '1';
     state.error = null;
     render(state, actions);
   },
   onMove(tokenId, zone) {
-    if (!tokenId || !knownZone(zone)) {
+    state.draft.selected = null;
+    if (state.phase !== 'move' || !tokenId) {
       render(state, actions);
       return;
     }
-    const point = zone === 'spawn' ? null : zone;
-    const { kind, index } = parseToken(tokenId);
-    if (kind === 'fighter' && state.draft.fighters[index]) {
-      state.draft.fighters[index].point = point;
+    if (tokenId.startsWith('fighter-')) {
+      const index = Number(tokenId.slice('fighter-'.length));
+      const name = state.draft.fighters[index].name;
+      const from = state.roundState.fighters.find((fighter) => fighter.name === name).point;
+      if (zone && zone !== 'hand' && canStep(from, zone, CONFIG)) state.draft.to[name] = zone;
     }
-    if (kind === 'util' && state.draft.utility[index]) {
-      state.draft.utility[index].point = point;
+    if (tokenId.startsWith('util-')) {
+      const index = Number(tokenId.slice('util-'.length));
+      const item = state.draft.throws.find((throwItem) => throwItem.index === index);
+      if (!item) {
+        render(state, actions);
+        return;
+      }
+      if (!zone || zone === 'hand') item.point = null;
+      else if (throwTargets().has(zone)) item.point = zone;
     }
-    state.draft.selected = tokenId;
     state.error = null;
     render(state, actions);
   },
-  onZone(zone) {
-    if (!state.draft.selected || !knownZone(zone)) return;
-    actions.onMove(state.draft.selected, zone);
+  onZone() {},
+  onDismiss(target) {
+    const app = document.querySelector('#app');
+    if (app.dataset.keepMenu === '1') {
+      delete app.dataset.keepMenu;
+      return;
+    }
+    if (!state.draft.selected) return;
+    const node = target && target.nodeType === 1 ? target : target?.parentElement;
+    if (node?.closest('[data-token], [data-weapon], [data-armor], [data-buy], [data-remove], #commit')) return;
+    state.draft.selected = null;
+    state.error = null;
+    render(state, actions);
   },
   onWeapon(weaponId) {
-    if (!state.draft.selected || !state.draft.selected.startsWith('fighter-')) return;
+    if (state.phase !== 'buy' || !state.draft.selected?.startsWith('fighter-')) return;
     const index = Number(state.draft.selected.slice('fighter-'.length));
     const fighters = state.draft.fighters.map((fighter, itemIndex) => (
       itemIndex === index ? { ...fighter, weapon: weaponId } : fighter
     ));
-    if (loadoutCost(fighters, state.draft.utility, CONFIG) > state.wallets.attack) return;
+    if (loadoutCost(fighters, state.draft.stock, CONFIG) > state.wallets.attack) return;
+    state.draft.fighters = fighters;
+    state.error = null;
+    render(state, actions);
+  },
+  onArmor() {
+    if (state.phase !== 'buy' || !state.draft.selected?.startsWith('fighter-')) return;
+    const index = Number(state.draft.selected.slice('fighter-'.length));
+    const fighters = state.draft.fighters.map((fighter, itemIndex) => (
+      itemIndex === index ? { ...fighter, armor: !fighter.armor } : fighter
+    ));
+    if (loadoutCost(fighters, state.draft.stock, CONFIG) > state.wallets.attack) return;
     state.draft.fighters = fighters;
     state.error = null;
     render(state, actions);
   },
   onBuyUtility(type) {
-    if (state.draft.utility.length >= CONFIG.rules.maxUtility) return;
-    const utility = state.draft.utility.concat([{ type, point: null }]);
-    if (loadoutCost(state.draft.fighters, utility, CONFIG) > state.wallets.attack) return;
-    state.draft.utility = utility;
+    if (state.phase !== 'buy') return;
+    if (state.draft.stock.length >= CONFIG.rules.maxUtility) return;
+    const stock = state.draft.stock.concat(type);
+    if (loadoutCost(state.draft.fighters, stock, CONFIG) > state.wallets.attack) return;
+    state.draft.stock = stock;
     state.error = null;
     render(state, actions);
   },
-  onRemove(tokenId) {
-    const { index } = parseToken(tokenId);
-    state.draft.utility = state.draft.utility.filter((_, itemIndex) => itemIndex !== index);
-    if (state.draft.selected === tokenId) state.draft.selected = null;
+  onRemove(index) {
+    if (state.phase !== 'buy') return;
+    state.draft.stock = state.draft.stock.filter((_, itemIndex) => itemIndex !== index);
     render(state, actions);
   },
-  onMid() {
-    const sites = CONFIG.pointOrder.filter((id) => CONFIG.points[id].isSite);
-    const current = sites.indexOf(state.draft.midTransfer);
-    state.draft.midTransfer = sites[(current + 1) % sites.length];
-    render(state, actions);
-  },
-  onFight() {
-    const unplaced = state.draft.fighters.some((fighter) => !fighter.point);
-    const cost = loadoutCost(state.draft.fighters, state.draft.utility, CONFIG);
-    if (unplaced || cost > state.wallets.attack) return;
-    const attack = {
-      fighters: state.draft.fighters.map((fighter) => ({
-        name: fighter.name,
-        weapon: fighter.weapon,
-        point: fighter.point,
-        rotator: false,
-      })),
-      utility: state.draft.utility
-        .filter((item) => item.point)
-        .map((item) => ({ type: item.type, point: item.point })),
-      midTransfer: state.draft.midTransfer,
-      cost,
-    };
+  onCommitBuy() {
+    const cost = loadoutCost(state.draft.fighters, state.draft.stock, CONFIG);
+    if (cost > state.wallets.attack) return;
     try {
-      const result = resolveRound({ attack, defense: state.botPlan }, CONFIG);
-      const applied = applyRoundEconomy(
-        {
-          wallets: state.wallets,
-          lossStreak: state.lossStreak,
-          score: state.score,
-        },
-        result,
-        { attack: cost, defense: state.botPlan.cost },
+      state.bot = planRound('defense', state.wallets.defense, CONFIG);
+      state.ledger = {
+        wallets: { ...state.wallets },
+        lossStreak: { ...state.lossStreak },
+        score: { ...state.score },
+      };
+      state.bill = { attack: cost, defense: state.bot.cost };
+      state.roundState = createRound(
+        { fighters: state.draft.fighters, stock: state.draft.stock },
+        { fighters: state.bot.fighters, stock: state.bot.stock },
         CONFIG,
       );
-      state.wallets = applied.wallets;
-      state.lossStreak = applied.lossStreak;
-      state.score = applied.score;
-      state.economy = applied.economy;
-      state.result = result;
-      state.history.push(result.winner);
-      state.matchWinner = matchStatus(state.score, state.round, CONFIG);
+      state.draft.to = {};
+      for (const fighter of state.roundState.fighters) {
+        if (fighter.side === 'attack') state.draft.to[fighter.name] = fighter.point;
+      }
+      state.draft.throws = state.roundState.stock.attack.map((_, index) => ({ index, point: null }));
+      state.draft.selected = null;
+      state.phase = 'move';
       state.error = null;
-      state.phase = 'replay';
-      state.replayIndex = 0;
-      state.playing = true;
       render(state, actions);
     } catch (error) {
       state.error = error.message;
       render(state, actions);
     }
   },
+  onCommitMove() {
+    try {
+      const defense = scriptFromRoute(state.bot.route, CONFIG.rosters.defense)[state.roundState.move];
+      const step = resolveMove(state.roundState, {
+        attack: moveOrders(),
+        defense,
+      }, CONFIG);
+      state.memory = remember(state.memory, step, 'attack');
+      state.log.push(step);
+      state.roundState = step.state;
+      state.phase = 'reveal';
+      state.error = null;
+      if (state.roundState.winner) settle();
+      render(state, actions);
+    } catch (error) {
+      state.error = error.message;
+      render(state, actions);
+    }
+  },
+  onContinue() {
+    if (state.roundState.winner) {
+      state.phase = 'review';
+      state.replayIndex = 0;
+      state.playing = true;
+      render(state, actions);
+      return;
+    }
+    state.phase = 'move';
+    state.draft.to = {};
+    for (const fighter of state.roundState.fighters) {
+      if (fighter.side === 'attack' && fighter.alive) state.draft.to[fighter.name] = fighter.point;
+    }
+    state.draft.throws = state.roundState.stock.attack.map((_, index) => ({ index, point: null }));
+    state.draft.selected = null;
+    render(state, actions);
+  },
   onReplay(index, playing) {
-    const last = state.result.stages.length - 1;
+    const last = state.log.length - 1;
     state.replayIndex = Math.max(0, Math.min(last, index));
     state.playing = Boolean(playing) && state.replayIndex < last;
     render(state, actions);
   },
   onTogglePlay() {
-    const last = state.result.stages.length - 1;
+    const last = state.log.length - 1;
     if (state.replayIndex >= last) {
       state.replayIndex = 0;
       state.playing = true;
@@ -218,6 +298,8 @@ window.addEventListener('error', (event) => {
   note.textContent = event.message || 'Ошибка скрипта';
   app.prepend(note);
 });
+
+document.querySelector('#app').addEventListener('click', (event) => actions.onDismiss(event.target));
 
 assertConfig();
 state = freshState();

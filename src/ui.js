@@ -1,8 +1,8 @@
 import { CONFIG } from './config.js';
-import { loadoutCost, weaponStrength } from './engine.js';
-import { anchorPercent, mapMarkup, tokenPercent } from './board.js';
+import { loadoutCost, canStep, neighbors, unfoundCount, shadowMarks } from './engine.js';
+import { cellBox, mapMarkup } from './board.js';
 import { bindDrag } from './dnd.js';
-import { changedOn, describeStage, stageTitle } from './timeline.js';
+import { cellNote, endText, formatStrength, resultText } from './timeline.js';
 
 let timers = [];
 
@@ -11,19 +11,13 @@ export function clearTimers() {
   timers = [];
 }
 
-export function formatStrength(value) {
-  const rounded = Math.round(value * 100) / 100;
-  if (Number.isInteger(rounded)) return String(rounded);
-  return rounded.toFixed(2).replace(/0$/, '').replace('.', ',');
-}
-
 export function formatMoney(value) {
   const sign = value < 0 ? '−' : '';
-  const digits = Math.abs(Math.round(value)).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '\u202F');
-  return `${sign}${digits}\u00A0$`;
+  const body = String(Math.abs(Math.round(value))).replace(/\B(?=(\d{3})+(?!\d))/g, '\u202F');
+  return `${sign}${body}\u00A0$`;
 }
 
-export function esc(value) {
+function esc(value) {
   return String(value)
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
@@ -31,220 +25,206 @@ export function esc(value) {
     .replaceAll('"', '&quot;');
 }
 
+function shownMoney(state) {
+  if (state.bill && !state.settled) return state.ledger.wallets.attack - state.bill.attack;
+  return state.wallets.attack;
+}
+
 function rulesBlock() {
-  const fullRifles = CONFIG.weapons.rifle.cost * CONFIG.rules.attackFighters;
+  const rifle = CONFIG.weapons.rifle;
+  const smg = CONFIG.weapons.smg;
+  const hold = formatStrength(CONFIG.rules.holdMultiplier);
   return `
     <details>
       <summary>Правила</summary>
       <ul>
-        <li>Матч до ${CONFIG.rules.winsNeeded} побед, не больше ${CONFIG.rules.maxRounds} раундов. Вы всегда атака.</li>
-        <li>Раунд берёт атака, если после мида, переброса и\u00A0ротатора её сила на сайте выше. Флеш отдаёт ничью атаке, но пустой сайт занять нельзя.</li>
-        <li>На сайте сила защиты ×${formatStrength(CONFIG.rules.defenderSiteMultiplier)}. Ротатор приходит туда, где вашей силы больше, и\u00A0считается как ×${formatStrength(CONFIG.rules.rotatorMultiplier)}.</li>
-        <li>Победа на миде переносит ${CONFIG.rules.midTransferFighters} бойца. Вы выбираете сайт заранее, бот уносит бойца туда, где вас больше.</li>
-        <li>Победа в\u00A0раунде: ${formatMoney(CONFIG.economy.winReward)}. Поражение: ${formatMoney(CONFIG.economy.lossBase)} плюс ${formatMoney(CONFIG.economy.lossStreakStep)} за каждое прошлое поражение подряд, не больше ${CONFIG.economy.maxLossStreakSteps} шагов.</li>
-        <li>Бот покупает винтовки только на всех сразу. Это ${formatMoney(fullRifles)}, за этот матч обычно не набирается.</li>
+        <li>Матч до\u00A0${CONFIG.rules.winsNeeded} побед и\u00A0не больше ${CONFIG.rules.maxRounds} раундов. В\u00A0раунде ${CONFIG.rules.movesPerRound} хода. Обе стороны ходят одновременно и\u00A0вслепую.</li>
+        <li>Шаг только в\u00A0соседнюю клетку или на\u00A0месте. Вы начинаете на\u00A0Т-спавне, бот на\u00A0КТ-спавне.</li>
+        <li>Пистолет даёт 1, ${esc(smg.name)} ${smg.strength}, ${esc(rifle.name)} ${rifle.strength}. ${esc(CONFIG.armor.name)} силы не даёт и\u00A0снимает одну смерть за\u00A0раунд.</li>
+        <li>Каждая клетка с\u00A0самого начала ваша или защиты. У\u00A0своих множитель ×${hold}. Где встретились, слабые гибнут все, сильные теряют одного. При равенстве клетка остаётся у\u00A0хозяина, и\u00A0каждая сторона теряет одного. Отстоитесь в\u00A0чужой клетке одни\u00A0— со\u00A0следующего хода она ваша.</li>
+        <li>Бомба ставится, когда вы живы на\u00A0пленте и\u00A0защиты там нет. Потом защита может обезвредить, если займёт клетку одна. После третьего хода неснятая бомба\u00A0— ваш раунд. Без бомбы побеждает, у\u00A0кого больше живых. Поровну\u00A0— защита.</li>
+        <li>Гранаты списываются в\u00A0начале раунда. Бросить можно любым ходом, в\u00A0свою клетку или соседнюю. Не бросили\u00A0— сгорели. Дымовая снимает ${CONFIG.utility.smoke.penalty}. Световая: победа без потерь, при равенстве клетка ваша.</li>
+        <li>Чужих видно только в\u00A0клетке, где на\u00A0этом ходу был контакт. Разбор после раунда показывает всё.</li>
       </ul>
     </details>
   `;
 }
 
-function header(state) {
-  const pips = Array.from({ length: CONFIG.rules.maxRounds }, (_, index) => {
-    const winner = state.history[index];
-    const current = !winner && index === state.round - 1;
-    const cls = winner === 'attack' ? 'win-attack' : winner === 'defense' ? 'win-defense' : current ? 'current' : '';
-    return `<span class="pip ${cls}"></span>`;
-  }).join('');
-  return `
-    <header class="top">
-      <div>
-        <p class="eyebrow">тестовая сборка · атака против бота</p>
-        <h1>${esc(CONFIG.map.name)}</h1>
-      </div>
-      <div class="wallet">
-        <span class="muted">Ваши деньги</span>
-        <strong>${formatMoney(state.wallets.attack)}</strong>
-      </div>
-    </header>
-    <section class="scoreboard">
-      <div class="side t">
-        <span class="role">T · атака</span>
-        <span class="num">${state.score.attack}</span>
-      </div>
-      <div class="meta">
-        <div>Раунд ${state.round} из ${CONFIG.rules.maxRounds}</div>
-        <div>до ${CONFIG.rules.winsNeeded} побед</div>
-        <div class="pips">${pips}</div>
-      </div>
-      <div class="side ct">
-        <span class="role">CT · защита</span>
-        <span class="num">${state.score.defense}</span>
-      </div>
-    </section>
-  `;
+function chip(person, tokenId) {
+  const strength = CONFIG.weapons[person.weapon].strength;
+  const drag = tokenId ? ` data-token="${esc(tokenId)}"` : '';
+  const classes = ['token', person.side === 'defense' ? 'enemy' : 'own', person.alive === false ? 'dead' : '']
+    .filter(Boolean)
+    .join(' ');
+  const armor = person.armor && !person.armorUsed ? ' Б' : '';
+  return `<span class="${classes}"${drag}>${esc(person.name)} ${strength}${armor}</span>`;
 }
 
-function tokenMarkup(token, selected) {
-  const classes = ['token', token.side];
-  if (token.rotator) classes.push('rotator');
-  if (token.alive === false) classes.push('dead');
-  if (selected) classes.push('selected');
-  const style = token.pos ? ` style="left:${token.pos.left}%;top:${token.pos.top}%"` : '';
-  const remove = token.removable
-    ? `<button type="button" class="token-x" data-stop data-remove="${esc(token.id)}" aria-label="Убрать">×</button>`
-    : '';
-  return `
-    <div class="${classes.join(' ')}" data-token="${esc(token.id)}"${style}>
-      <span class="token-name">${esc(token.name)}</span>
-      <span class="token-gun">${esc(token.gun)}</span>
-      ${remove}
-    </div>
-  `;
+function ownPower(state, cellId) {
+  if (!state.roundState) return 0;
+  const people = state.roundState.fighters.filter((fighter) => {
+    if (fighter.side !== 'attack' || !fighter.alive) return false;
+    const to = state.draft.to[fighter.name] || fighter.point;
+    return to === cellId;
+  });
+  const raw = people.reduce((sum, fighter) => sum + CONFIG.weapons[fighter.weapon].strength, 0);
+  if (state.roundState.owned[cellId] === 'attack') return raw * CONFIG.rules.holdMultiplier;
+  return raw;
 }
 
-function placeTokens(items) {
-  const counts = {};
-  const placed = [];
-  const loose = [];
-  for (const item of items) {
-    if (!item.point) {
-      loose.push(item);
-      continue;
-    }
-    const index = counts[item.point] || 0;
-    counts[item.point] = index + 1;
-    placed.push({ ...item, pos: tokenPercent(item.point, index) });
-  }
-  return { placed, loose };
+function sightMove(state) {
+  if (!state.roundState || state.phase === 'buy' || state.phase === 'move') return -1;
+  return state.roundState.move;
 }
 
-function planItems(state) {
-  const fighters = state.draft.fighters.map((fighter, index) => ({
-    id: `fighter-${index}`,
-    side: 'attack',
-    name: fighter.name,
-    gun: CONFIG.weapons[fighter.weapon].name,
-    point: fighter.point,
-    rotator: false,
-    alive: true,
-    removable: false,
-  }));
-  const utility = state.draft.utility.map((item, index) => ({
-    id: `util-${index}`,
-    side: 'attack',
-    name: CONFIG.utility[item.type].name,
-    gun: item.point ? 'брошен' : 'в руке',
-    point: item.point,
-    rotator: false,
-    alive: true,
-    removable: true,
-  }));
-  return placeTokens(fighters.concat(utility));
+function stepOf(state) {
+  if (state.phase === 'review') return state.log[state.replayIndex] || null;
+  if (state.phase === 'reveal') return state.log.at(-1) || null;
+  return null;
 }
 
-function replayItems(stage) {
-  const fighters = stage.fighters
-    .filter((fighter) => fighter.point)
-    .map((fighter) => ({
-      id: `${fighter.side}-${fighter.name}`,
-      side: fighter.side,
-      name: fighter.name,
-      gun: CONFIG.weapons[fighter.weapon].name,
-      point: fighter.point,
-      rotator: fighter.rotator,
-      alive: fighter.alive,
-      removable: false,
+function peopleInCell(state, cellId) {
+  const step = stepOf(state);
+  if (state.phase === 'buy') {
+    if (cellId !== CONFIG.spawns.attack) return [];
+    return state.draft.fighters.map((fighter, index) => ({
+      html: chip({ ...fighter, side: 'attack', alive: true }, `fighter-${index}`),
     }));
-  return placeTokens(fighters);
-}
-
-function badgeMarkup(id, attackStrength, defenseStrength, hideDefense, marks) {
-  const pos = anchorPercent(CONFIG.map.zones[id].labelAt);
-  const defense = hideDefense
-    ? '<span class="badge-ct">?</span>'
-    : `<span class="badge-ct">${formatStrength(defenseStrength)}</span>`;
-  const chips = [];
-  if (marks.smokes.includes(id)) chips.push('<span class="chip smoke">дым</span>');
-  if (marks.flashes.includes(id)) chips.push('<span class="chip flash">флеш</span>');
-  return `
-    <div class="badge" style="left:${pos.left}%;top:${pos.top}%">
-      <span class="badge-t">${formatStrength(attackStrength)}</span>
-      ${defense}
-      ${chips.join('')}
-    </div>
-  `;
-}
-
-function planStrength(draft, pointId) {
-  return draft.fighters
-    .filter((fighter) => fighter.point === pointId)
-    .reduce((sum, fighter) => sum + weaponStrength(fighter.weapon, pointId, CONFIG), 0);
-}
-
-function badges(state) {
-  if (state.phase === 'plan') {
-    const marks = {
-      smokes: state.draft.utility.filter((item) => item.type === 'smoke' && item.point).map((item) => item.point),
-      flashes: state.draft.utility.filter((item) => item.type === 'flash' && item.point).map((item) => item.point),
-    };
-    return CONFIG.pointOrder.map((id) => badgeMarkup(id, planStrength(state.draft, id), 0, true, marks)).join('');
   }
-  const stage = state.result.stages[state.replayIndex];
-  return CONFIG.pointOrder.map((id) => badgeMarkup(
-    id,
-    stage.points[id].attackStrength,
-    stage.points[id].defenseFinal,
-    false,
-    stage,
-  )).join('');
+  if (state.phase === 'move') {
+    const chips = [];
+    for (const fighter of state.roundState.fighters) {
+      if (fighter.side !== 'attack') continue;
+      const to = fighter.alive ? (state.draft.to[fighter.name] || fighter.point) : fighter.point;
+      if (to !== cellId) continue;
+      const index = state.draft.fighters.findIndex((item) => item.name === fighter.name);
+      chips.push(chip(fighter, fighter.alive ? `fighter-${index}` : ''));
+    }
+    return chips.map((html) => ({ html }));
+  }
+  if (!step) return [];
+  const truth = state.phase === 'review';
+  const fight = step.fights[cellId];
+  const chips = [];
+  for (const fighter of step.state.fighters) {
+    if (fighter.point !== cellId) continue;
+    if (fighter.side === 'defense' && !truth) {
+      const seen = fight?.contact && fight.present.some((person) => person.name === fighter.name);
+      if (!seen) continue;
+    }
+    chips.push(chip(fighter, ''));
+  }
+  return chips.map((html) => ({ html }));
 }
 
-function midArrow(state) {
-  if (state.phase !== 'plan') return '';
-  const onMid = state.draft.fighters.some((fighter) => fighter.point === 'MID');
-  if (!onMid) return '';
-  const pos = anchorPercent(CONFIG.map.zones.MID.labelAt);
-  return `
-    <button type="button" class="mid-arrow" data-stop data-mid style="left:${pos.left}%;top:${pos.top}%">
-      мид наш → ${esc(state.draft.midTransfer)}
-    </button>
-  `;
+function powerLine(state, cellId) {
+  const step = stepOf(state);
+  if (!step) {
+    const power = state.phase === 'buy' ? 0 : ownPower(state, cellId);
+    if (!power) return '';
+    return `<p class="cell-power">${formatStrength(power)}</p>`;
+  }
+  const fight = step.fights[cellId];
+  const truth = state.phase === 'review';
+  if (!fight) return '';
+  if (truth && (fight.attackCount || fight.defenseCount)) {
+    return `<p class="cell-power">${formatStrength(fight.attackFinal)} <span>против</span> ${formatStrength(fight.defenseFinal)}</p>`;
+  }
+  if (fight.contact) {
+    return `<p class="cell-power">${formatStrength(fight.attackFinal)} <span>против</span> ${formatStrength(fight.defenseFinal)}</p>`;
+  }
+  if (fight.attackCount) return `<p class="cell-power">${formatStrength(fight.attackFinal)}</p>`;
+  return '';
+}
+
+function ownerLine(state, cellId) {
+  const owned = (stepOf(state)?.state || state.roundState)?.owned?.[cellId]
+    || CONFIG.map.cells[cellId].owner;
+  if (!owned) return '';
+  const hold = formatStrength(CONFIG.rules.holdMultiplier);
+  const text = owned === 'attack' ? `ваша ×${hold}` : `защита ×${hold}`;
+  return `<p class="cell-own ${owned}">${text}</p>`;
+}
+
+function bombHere(state, cellId) {
+  const round = stepOf(state)?.state || state.roundState;
+  return round?.bomb?.point === cellId && !round.defused;
+}
+
+function cellsMarkup(state) {
+  return CONFIG.cellOrder.map((cellId) => {
+    const box = cellBox(cellId);
+    const cell = CONFIG.map.cells[cellId];
+    const step = stepOf(state);
+    const fight = step?.fights[cellId];
+    const hot = fight?.contact ? ' hot' : '';
+    const plant = cell.plant ? ' plant' : '';
+    const bomb = bombHere(state, cellId) ? ' bombed' : '';
+    const people = peopleInCell(state, cellId).map((item) => item.html).join('');
+    const shadows = state.phase === 'review' ? [] : shadowMarks(
+      state.roundState?.fighters || [],
+      state.memory || {},
+      'attack',
+      sightMove(state),
+    ).filter((mark) => mark.point === cellId);
+    const shadow = shadows.map((mark) => `<p class="shadow">${esc(mark.name)}, ход\u00A0${mark.move}</p>`).join('');
+    const thrown = state.phase === 'move'
+      ? (state.draft.throws || []).filter((item) => item.point === cellId).map((item) => CONFIG.utility[state.roundState.stock.attack[item.index]].name)
+      : [];
+    const throwLine = thrown.length ? `<p class="cell-throw">${esc(thrown.join(', '))}</p>` : '';
+    const note = step ? cellNote(cellId, step, state.phase === 'review') : '';
+    const result = step && (state.phase === 'review' || fight?.contact) ? resultText(fight) : '';
+    const bombLine = bombHere(state, cellId) ? '<p class="cell-bomb">Бомба</p>' : '';
+    return `
+      <div class="cell${hot}${plant}${bomb}" data-zone="${esc(cellId)}" style="left:${box.left}%;top:${box.top}%;width:${box.width}%;height:${box.height}%">
+        <p class="cell-label">${esc(cell.label)}</p>
+        ${ownerLine(state, cellId)}
+        ${powerLine(state, cellId)}
+        <div class="cell-people">${people}</div>
+        ${shadow}
+        ${throwLine}
+        ${bombLine}
+        ${result ? `<p class="cell-result">${esc(result)}</p>` : ''}
+        ${note ? `<p class="cell-note">${esc(note)}</p>` : ''}
+      </div>
+    `;
+  }).join('');
 }
 
 function weaponPicker(state) {
-  if (!state.draft.selected || !state.draft.selected.startsWith('fighter-')) {
-    return '<p class="hint">Нажмите бойца, чтобы сменить оружие.</p>';
+  if (state.phase !== 'buy' || !state.draft.selected?.startsWith('fighter-')) {
+    return '<p class="hint">Нажмите своего, чтобы выбрать оружие и\u00A0броник.</p>';
   }
   const index = Number(state.draft.selected.slice('fighter-'.length));
   const fighter = state.draft.fighters[index];
-  const buttons = CONFIG.weaponOrder.map((id) => {
+  const guns = CONFIG.weaponOrder.map((id) => {
     const weapon = CONFIG.weapons[id];
-    const fighters = state.draft.fighters.map((item, itemIndex) => (
+    const next = state.draft.fighters.map((item, itemIndex) => (
       itemIndex === index ? { ...item, weapon: id } : item
     ));
-    const cost = loadoutCost(fighters, state.draft.utility, CONFIG);
-    const short = cost - state.wallets.attack;
-    const disabled = short > 0 ? ' disabled' : '';
+    const short = loadoutCost(next, state.draft.stock, CONFIG) - state.wallets.attack;
     const current = fighter.weapon === id ? ' current' : '';
-    const note = short > 0 ? ` · не хватает ${formatMoney(short)}` : '';
-    let detail = `сила ${formatStrength(weapon.strength)}`;
-    if (weapon.longStrength != null) {
-      detail = `длинная ${formatStrength(weapon.longStrength)} / короткая ${formatStrength(weapon.shortStrength)}`;
-    }
-    return `
-      <button type="button" class="weapon${current}" data-weapon="${esc(id)}"${disabled}>
-        ${esc(weapon.name)} · ${formatMoney(weapon.cost)} · ${detail}${note}
-      </button>
-    `;
+    const note = short > 0 ? `, не хватает ${formatMoney(short)}` : '';
+    return `<button type="button" class="weapon${current}" data-weapon="${esc(id)}"${short > 0 ? ' disabled' : ''}>${esc(weapon.name)} · ${formatMoney(weapon.cost)} · сила ${weapon.strength}${note}</button>`;
   }).join('');
-  return `<p class="picker-name">${esc(fighter.name)}</p>${buttons}`;
+  const armored = state.draft.fighters.map((item, itemIndex) => (
+    itemIndex === index ? { ...item, armor: !fighter.armor } : item
+  ));
+  const armorShort = loadoutCost(armored, state.draft.stock, CONFIG) - state.wallets.attack;
+  const armorOff = !fighter.armor && armorShort > 0;
+  return `
+    <p class="picker-name">${esc(fighter.name)}</p>
+    ${guns}
+    <button type="button" class="weapon${fighter.armor ? ' current' : ''}" data-armor="1"${armorOff ? ' disabled' : ''}>${esc(CONFIG.armor.name)} · ${formatMoney(CONFIG.armor.cost)} · снимает одну смерть${armorOff ? `, не хватает ${formatMoney(armorShort)}` : ''}</button>
+  `;
 }
 
 function grenadeButtons(state) {
+  if (state.phase !== 'buy') return '';
   return CONFIG.utilityOrder.map((id) => {
     const item = CONFIG.utility[id];
-    const next = state.draft.utility.concat([{ type: id, point: null }]);
-    const full = state.draft.utility.length >= CONFIG.rules.maxUtility;
+    const next = state.draft.stock.concat(id);
+    const full = state.draft.stock.length >= CONFIG.rules.maxUtility;
     const short = loadoutCost(state.draft.fighters, next, CONFIG) - state.wallets.attack;
     const disabled = full || short > 0 ? ' disabled' : '';
     const why = full ? ' · лимит' : short > 0 ? ` · не хватает ${formatMoney(short)}` : '';
@@ -252,120 +232,80 @@ function grenadeButtons(state) {
   }).join('');
 }
 
-function fightControl(state) {
-  const unplaced = state.draft.fighters.filter((fighter) => !fighter.point).length;
-  const cost = loadoutCost(state.draft.fighters, state.draft.utility, CONFIG);
-  const short = cost - state.wallets.attack;
-  const ready = unplaced === 0 && short <= 0;
-  let label = 'В\u00A0бой';
-  if (unplaced) label = `На карте не все: ${unplaced}`;
-  else if (short > 0) label = `Не хватает ${formatMoney(short)}`;
-  const thrown = state.draft.utility.filter((item) => !item.point).length;
-  const note = thrown
-    ? '<p class="hint">Неброшенные гранаты тоже списываются.</p>'
-    : '';
-  return `
-    <p class="cost-line ${ready ? 'ok' : 'bad'}">Набор ${formatMoney(cost)}. Останется ${formatMoney(state.wallets.attack - cost)}.</p>
-    ${note}
-    ${state.error ? `<p class="error">${esc(state.error)}</p>` : ''}
-    <button type="button" id="fight"${ready ? '' : ' disabled'}>${label}</button>
-  `;
-}
-
-function planPanel(state) {
-  const botName = state.botPlan.weapon === 'rifle' ? 'винтовки' : 'пистолеты';
-  const onMap = state.draft.selected && state.draft.selected.startsWith('fighter-')
-    && state.draft.fighters[Number(state.draft.selected.slice('fighter-'.length))]?.point;
-  const picker = onMap
-    ? '<p class="hint">Оружие открыто у\u00A0бойца на карте.</p>'
-    : `<div class="picker">${weaponPicker(state)}</div>`;
-  return `
-    <section class="panel">
-      <h2>Закуп</h2>
-      <p class="lede">Перетащите бойца на зону или нажмите его, потом зону.</p>
-      ${picker}
-      <div class="actions grenades">
-        ${grenadeButtons(state)}
-      </div>
-      <p class="hint">Набор противника: ${botName}, ${formatMoney(state.botPlan.cost)}. Где они стоят, видно после вскрытия.</p>
-      ${fightControl(state)}
-      ${rulesBlock()}
-    </section>
-  `;
-}
-
-function stepList(state) {
-  const stages = state.result.stages;
-  return stages.map((stage, index) => {
-    const previous = stages[index - 1] || stage;
-    const described = describeStage(stage, previous, state.result);
-    let cls = 'future';
-    if (index < state.replayIndex) cls = 'done';
-    if (index === state.replayIndex) cls = 'current';
-    return `<li class="step-line ${cls}"><strong>${esc(described.title)}.</strong> ${esc(described.text)}</li>`;
+function tray(state) {
+  if (state.phase === 'buy') {
+    const chips = state.draft.stock.map((type, index) => (
+      `<span class="token grenade" data-token="util-${index}">${esc(CONFIG.utility[type].name)}<small>сгорит, если не бросить</small><button type="button" data-stop data-remove="${index}">убрать</button></span>`
+    )).join('');
+    return `<div class="tray" data-zone="hand">${chips}</div>`;
+  }
+  if (state.phase !== 'move' || !state.roundState) return '';
+  const chips = state.roundState.stock.attack.map((type, index) => {
+    const assigned = state.draft.throws.find((item) => item.index === index);
+    if (assigned?.point) return '';
+    return `<span class="token grenade" data-token="util-${index}">${esc(CONFIG.utility[type].name)}<small>в свою клетку или соседнюю</small></span>`;
   }).join('');
+  if (!chips) return '';
+  return `<div class="tray" data-zone="hand">${chips}</div>`;
 }
 
-function debugTable(state) {
-  const stages = state.result.stages;
-  const rows = CONFIG.pointOrder.map((id) => {
-    const point = state.result.points[id];
-    let outcome = 'удержана';
-    if (!CONFIG.points[id].isSite) {
-      outcome = point.control === 'none' ? 'пусто' : point.control === 'attack' ? 'атака' : 'защита';
-    } else if (point.control === 'attack') {
-      outcome = 'взята';
-    }
+function panel(state) {
+  const money = shownMoney(state);
+  if (state.phase === 'buy') {
+    const cost = loadoutCost(state.draft.fighters, state.draft.stock, CONFIG);
+    const ready = cost <= state.wallets.attack;
     return `
-      <tr>
-        <td>${esc(CONFIG.points[id].name)}</td>
-        <td>${formatStrength(point.attackStrength)}</td>
-        <td>${formatStrength(point.defenseBeforeUtility)}</td>
-        <td>${point.smokePenalty ? `−${formatStrength(point.smokePenalty)}` : '—'}</td>
-        <td>${formatStrength(point.defenseFinal)}</td>
-        <td>${point.flash ? 'да' : 'нет'}</td>
-        <td>${outcome}</td>
-        <td>${esc(stageTitle(changedOn(stages, id)))}</td>
-      </tr>
+      <section class="panel">
+        <h2>Закуп</h2>
+        <p class="hint">Гранаты списываются сейчас. Бросить можно на\u00A0любом из\u00A0трёх ходов. Не бросили\u00A0— сгорели.</p>
+        ${weaponPicker(state)}
+        <div class="actions">${grenadeButtons(state)}</div>
+        <p class="cost-line ${ready ? 'ok' : 'bad'}">Набор ${formatMoney(cost)}. Останется ${formatMoney(state.wallets.attack - cost)}.</p>
+        ${state.error ? `<p class="error">${esc(state.error)}</p>` : ''}
+        <button type="button" id="commit"${ready ? '' : ' disabled'}>Начать раунд</button>
+        ${rulesBlock()}
+      </section>
     `;
-  }).join('');
-  const economy = state.economy.attack;
-  return `
-    <details open>
-      <summary>Разбор раунда</summary>
-      <p class="hint">Таблица\u00A0— числа самого боя. После переброса на миде на карте остаются только те, кто не ушёл.</p>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Точка</th>
-              <th>Атака</th>
-              <th>Защита до смоука</th>
-              <th>Смоук</th>
-              <th>Защита после</th>
-              <th>Флеш</th>
-              <th>Итог</th>
-              <th>Когда</th>
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-      <p class="hint">Вы: ${formatMoney(economy.before)} − ${formatMoney(economy.spent)} + ${formatMoney(economy.reward)} → ${formatMoney(economy.after)}.</p>
-    </details>
-  `;
-}
-
-function replayPanel(state) {
+  }
+  if (state.phase === 'move') {
+    const move = state.roundState.move + 1;
+    const missing = unfoundCount(state.roundState, state.memory, 'attack', sightMove(state));
+    return `
+      <section class="panel">
+        <h2>Ход ${move}</h2>
+        <p class="hint">Перетащите живого в\u00A0соседнюю клетку или оставьте где стоит. Бот ходит одновременно и\u00A0вашей расстановки не видит.</p>
+        <p class="unfound">Не найдено: ${missing}</p>
+        ${state.error ? `<p class="error">${esc(state.error)}</p>` : ''}
+        <button type="button" id="commit">Сделать ход</button>
+        <p class="hint">Деньги набора: ${formatMoney(state.bill.attack)}. Сейчас ${formatMoney(money)}.</p>
+        ${rulesBlock()}
+      </section>
+    `;
+  }
+  if (state.phase === 'reveal') {
+    const step = state.log.at(-1);
+    const over = Boolean(state.roundState.winner);
+    const missing = unfoundCount(state.roundState, state.memory, 'attack', sightMove(state));
+    return `
+      <section class="panel">
+        <h2>Ход ${step.move}</h2>
+        <p class="hint">${esc(over ? endText(state.roundState) : 'Контакт только в\u00A0подсвеченных клетках. Остальные чужие не видны.')}</p>
+        <p class="unfound">Не найдено: ${missing}</p>
+        <button type="button" id="continue">${over ? 'Как было на\u00A0самом деле' : `Ход ${step.move + 1}`}</button>
+        ${rulesBlock()}
+      </section>
+    `;
+  }
+  const step = state.log[state.replayIndex];
   const playLabel = state.playing ? 'Пауза' : 'Дальше само';
   const nextLabel = state.matchWinner ? 'Ещё матч' : 'Следующий раунд';
-  const banner = state.matchWinner && state.replayIndex === state.result.stages.length - 1
+  const banner = state.matchWinner
     ? `<p class="result-banner ${esc(state.matchWinner)}">${state.matchWinner === 'attack' ? 'Победа атаки' : state.matchWinner === 'defense' ? 'Победа защиты' : 'Ничья'}</p>`
     : '';
   return `
     <section class="panel">
-      <h2>Как сыграл раунд</h2>
-      <ol class="steps">${stepList(state)}</ol>
+      <h2>Ход ${step ? step.move : 1}, как было</h2>
+      <p class="hint">${esc(endText(state.roundState))}</p>
       <div class="actions transport">
         <button type="button" id="replay-start" class="secondary">Сначала</button>
         <button type="button" id="replay-back" class="secondary">Назад</button>
@@ -373,95 +313,114 @@ function replayPanel(state) {
         <button type="button" id="replay-forward" class="secondary">Вперёд</button>
       </div>
       ${banner}
-      <div class="actions">
-        <button type="button" id="next">${nextLabel}</button>
-      </div>
-      ${debugTable(state)}
+      <div class="actions"><button type="button" id="next">${nextLabel}</button></div>
       ${rulesBlock()}
     </section>
   `;
 }
 
-function mapPicker(state, items) {
-  if (state.phase !== 'plan' || !state.draft.selected || !state.draft.selected.startsWith('fighter-')) return '';
-  const token = items.placed.find((item) => item.id === state.draft.selected);
-  if (!token) return '';
-  return `<div class="picker pop" data-stop style="left:${token.pos.left}%;top:${token.pos.top}%">${weaponPicker(state)}</div>`;
-}
-
-function shell(state) {
-  const focus = state.phase === 'replay' ? state.result.stages[state.replayIndex].focus : null;
-  const items = state.phase === 'plan' ? planItems(state) : replayItems(state.result.stages[state.replayIndex]);
-  const selected = state.phase === 'plan' ? state.draft.selected : null;
-  const mapTokens = items.placed.map((token) => tokenMarkup(token, token.id === selected)).join('');
-  const spawnTokens = items.loose.map((token) => tokenMarkup(token, token.id === selected)).join('');
-  const spawn = state.phase === 'plan'
-    ? `<div class="spawn" data-zone="spawn" id="spawn">${spawnTokens || '<p class="hint">Все бойцы на карте.</p>'}</div>`
-    : '';
-  const panel = state.phase === 'plan' ? planPanel(state) : replayPanel(state);
+function scoreboard(state) {
+  const botWeapon = state.bot ? CONFIG.weapons[state.bot.weapon].name : 'ещё не закупился';
   return `
-    ${header(state)}
-    <div id="board" class="stage">
-      <div class="map-column">
-        <div class="map-wrap">
-          ${mapMarkup(focus)}
-          <div class="token-layer">
-            ${badges(state)}
-            ${midArrow(state)}
-            ${mapPicker(state, items)}
-            ${mapTokens}
-          </div>
-        </div>
-        ${spawn}
+    <header class="top">
+      <div>
+        <p class="eyebrow">тестовая сборка · три хода</p>
+        <h1>Dust2</h1>
       </div>
-      ${panel}
-    </div>
-    <p class="foot">Тестовая сборка. Рейтинга и\u00A0ставок нет.</p>
+      <p class="wallet"><span class="muted">Ваши деньги</span><strong>${formatMoney(shownMoney(state))}</strong></p>
+    </header>
+    <section class="scoreboard">
+      <div><p class="role">Вы · атака</p><p class="num">${state.score.attack}</p></div>
+      <p class="round">Раунд ${state.round}</p>
+      <div><p class="role">Бот · защита</p><p class="num">${state.score.defense}</p><p class="meta">${esc(botWeapon)}</p></div>
+    </section>
   `;
 }
 
 export function render(state, actions) {
   clearTimers();
-  document.querySelector('#app').innerHTML = shell(state);
-  const board = document.querySelector('#board');
-  if (state.phase === 'plan') {
-    bindDrag(board, {
-      onTap: (id) => actions.onSelect(id),
-      onDrop: (id, zone) => actions.onMove(id, zone),
-      onZone: (zone) => actions.onZone(zone),
-    }, { threshold: CONFIG.ui.dragThreshold });
-    bindPlan(actions);
-  } else {
-    bindReplay(state, actions);
-  }
-}
+  const missing = state.roundState
+    ? unfoundCount(state.roundState, state.memory, 'attack', sightMove(state))
+    : CONFIG.rules.defenseFighters;
+  const app = document.querySelector('#app');
+  app.innerHTML = `
+    ${scoreboard(state)}
+    <div class="stage">
+      <div>
+        ${state.phase === 'review' ? '' : `<p class="unfound map-unfound">Не найдено: ${state.phase === 'buy' ? CONFIG.rules.defenseFighters : missing}</p>`}
+        <div id="board">
+          <div class="map-frame">
+            ${mapMarkup()}
+            ${cellsMarkup(state)}
+          </div>
+          ${tray(state)}
+        </div>
+      </div>
+      ${panel(state)}
+    </div>
+    <p class="foot">Тестовая сборка. Рейтинга и\u00A0ставок нет.</p>
+  `;
 
-function bindPlan(actions) {
-  document.querySelectorAll('[data-weapon]').forEach((button) => {
+  bindDrag(document.querySelector('#board'), {
+    onTap(tokenId) {
+      if (state.phase === 'buy' && tokenId.startsWith('fighter-')) actions.onSelect(tokenId);
+    },
+    onDrag(tokenId) {
+      const zones = document.querySelectorAll('#board [data-zone]');
+      for (const zone of zones) zone.classList.remove('reach');
+      if (state.phase !== 'move') return;
+      if (tokenId.startsWith('fighter-')) {
+        const index = Number(tokenId.slice('fighter-'.length));
+        const name = state.draft.fighters[index].name;
+        const from = state.roundState.fighters.find((fighter) => fighter.name === name).point;
+        for (const zone of zones) {
+          if (zone.dataset.zone !== 'hand' && canStep(from, zone.dataset.zone)) zone.classList.add('reach');
+        }
+      }
+      if (tokenId.startsWith('util-')) {
+        const cells = new Set();
+        for (const fighter of state.roundState.fighters) {
+          if (fighter.side !== 'attack' || !fighter.alive) continue;
+          const at = state.draft.to[fighter.name] || fighter.point;
+          cells.add(at);
+          for (const next of neighbors(at)) cells.add(next);
+        }
+        for (const zone of zones) {
+          if (cells.has(zone.dataset.zone)) zone.classList.add('reach');
+        }
+      }
+    },
+    onDrop(tokenId, zone) {
+      actions.onMove(tokenId, zone);
+    },
+    onZone() {},
+  }, { threshold: CONFIG.ui.dragThreshold });
+
+  app.querySelectorAll('[data-weapon]').forEach((button) => {
     button.addEventListener('click', () => actions.onWeapon(button.dataset.weapon));
   });
-  document.querySelectorAll('[data-buy]').forEach((button) => {
+  app.querySelector('[data-armor]')?.addEventListener('click', () => actions.onArmor());
+  app.querySelectorAll('[data-buy]').forEach((button) => {
     button.addEventListener('click', () => actions.onBuyUtility(button.dataset.buy));
   });
-  document.querySelectorAll('[data-remove]').forEach((button) => {
+  app.querySelectorAll('[data-remove]').forEach((button) => {
     button.addEventListener('click', (event) => {
       event.stopPropagation();
-      actions.onRemove(button.dataset.remove);
+      actions.onRemove(Number(button.dataset.remove));
     });
   });
-  const mid = document.querySelector('[data-mid]');
-  if (mid) mid.addEventListener('click', () => actions.onMid());
-  const fight = document.querySelector('#fight');
-  if (fight) fight.addEventListener('click', () => actions.onFight());
-}
+  app.querySelector('#commit')?.addEventListener('click', () => {
+    if (state.phase === 'buy') actions.onCommitBuy();
+    else actions.onCommitMove();
+  });
+  app.querySelector('#continue')?.addEventListener('click', () => actions.onContinue());
+  app.querySelector('#replay-back')?.addEventListener('click', () => actions.onReplay(state.replayIndex - 1, false));
+  app.querySelector('#replay-forward')?.addEventListener('click', () => actions.onReplay(state.replayIndex + 1, false));
+  app.querySelector('#replay-start')?.addEventListener('click', () => actions.onReplay(0, false));
+  app.querySelector('#replay-play')?.addEventListener('click', () => actions.onTogglePlay());
+  app.querySelector('#next')?.addEventListener('click', () => actions.onNext());
 
-function bindReplay(state, actions) {
-  document.querySelector('#replay-start').addEventListener('click', () => actions.onReplay(0, true));
-  document.querySelector('#replay-back').addEventListener('click', () => actions.onReplay(state.replayIndex - 1, false));
-  document.querySelector('#replay-forward').addEventListener('click', () => actions.onReplay(state.replayIndex + 1, false));
-  document.querySelector('#replay-play').addEventListener('click', () => actions.onTogglePlay());
-  document.querySelector('#next').addEventListener('click', () => actions.onNext());
-  if (!state.playing) return;
-  if (state.replayIndex >= state.result.stages.length - 1) return;
-  timers.push(setTimeout(() => actions.onReplay(state.replayIndex + 1, true), CONFIG.ui.playbackStepMs));
+  if (state.phase === 'review' && state.playing && state.replayIndex < state.log.length - 1) {
+    timers.push(setTimeout(() => actions.onReplay(state.replayIndex + 1, true), CONFIG.ui.playbackStepMs));
+  }
 }

@@ -25,6 +25,7 @@ export function bindDrag(root, handlers, options) {
     const dx = event.clientX - drag.startX;
     const dy = event.clientY - drag.startY;
     if (!drag.moved && Math.hypot(dx, dy) < options.threshold) return;
+    if (!drag.moved) handlers.onDrag?.(drag.id);
     drag.moved = true;
     document.documentElement.classList.add('dragging');
     const token = drag.token;

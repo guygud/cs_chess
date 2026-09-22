@@ -1,5 +1,5 @@
 import { CONFIG } from './config.js';
-import { loadoutCost } from './engine.js';
+import { canStep, loadoutCost } from './engine.js';
 
 function fail(message) {
   throw new Error(message);
@@ -16,61 +16,71 @@ export function pickWeighted(items, rng) {
   return items[items.length - 1];
 }
 
-function assertTemplate(template, expected, config) {
-  const sum = config.pointOrder.reduce((total, id) => total + template.points[id], 0);
-  if (sum !== expected) {
-    fail(`Шаблон ${template.id} ставит ${sum} бойцов, нужно ${expected}`);
+export function assertRoute(route, side, config = CONFIG) {
+  const names = config.rosters[side];
+  const count = side === 'attack' ? config.rules.attackFighters : config.rules.defenseFighters;
+  if (names.length !== count) fail(`Ростер ${side}: ожидалось ${count}, есть ${names.length}`);
+  if (route.moves.length !== config.rules.movesPerRound) {
+    fail(`Маршрут ${route.id}: ходов ${route.moves.length}`);
   }
-  for (const id of config.pointOrder) {
-    const count = template.points[id];
-    if (!Number.isInteger(count) || count < 0) {
-      fail(`Шаблон ${template.id}: точка ${id} задана неверно`);
-    }
+  let points = names.map(() => config.spawns[side]);
+  route.moves.forEach((step, move) => {
+    if (step.length !== count) fail(`Маршрут ${route.id}, ход ${move + 1}: не ${count} клеток`);
+    step.forEach((to, index) => {
+      if (!canStep(points[index], to, config)) {
+        fail(`Маршрут ${route.id}: ${names[index]} не шагает из ${points[index]} в ${to}`);
+      }
+      points[index] = to;
+    });
+  });
+}
+
+export function assertRoutes(config = CONFIG) {
+  for (const side of ['attack', 'defense']) {
+    for (const route of config.routes[side]) assertRoute(route, side, config);
   }
 }
 
-export function planDefense(wallet, config = CONFIG, rng = Math.random) {
-  const roster = config.rosters.defense;
-  const headcount = config.rules.defensePlaced + config.rules.defenseRotators;
-  if (roster.length !== headcount) {
-    fail(`Ростер защиты: ожидалось ${headcount} имён, есть ${roster.length}`);
-  }
+function gear(wallet, count, config) {
+  const rifle = config.weapons.rifle.cost * count;
+  const smg = config.weapons.smg.cost * count;
+  let weapon = 'pistol';
+  if (wallet >= rifle) weapon = 'rifle';
+  else if (wallet >= smg) weapon = 'smg';
+  const spent = config.weapons[weapon].cost * count;
+  const armor = spent + config.armor.cost * count <= wallet;
+  return { weapon, armor };
+}
 
-  const rifleCost = config.weapons.rifle.cost;
-  const fullBuy = rifleCost * headcount;
-  const weapon = wallet >= fullBuy ? 'rifle' : 'pistol';
-  const template = pickWeighted(config.defenseTemplates, rng);
-  assertTemplate(template, config.rules.defensePlaced, config);
-
-  const fighters = [];
-  let index = 0;
-  for (const pointId of config.pointOrder) {
-    for (let count = 0; count < template.points[pointId]; count += 1) {
-      fighters.push({
-        name: roster[index],
-        weapon,
-        point: pointId,
-        rotator: false,
-      });
-      index += 1;
-    }
-  }
-  fighters.push({
-    name: roster[index],
-    weapon,
-    point: null,
-    rotator: true,
-  });
-
-  const utility = [];
-  const cost = loadoutCost(fighters, utility, config);
-  if (cost > wallet) fail(`Закупка бота ${cost} дороже кошелька ${wallet}`);
-
+export function planRound(side, wallet, config = CONFIG, rng = Math.random) {
+  const names = config.rosters[side];
+  const count = names.length;
+  const route = pickWeighted(config.routes[side], rng);
+  assertRoute(route, side, config);
+  const picked = gear(wallet, count, config);
+  const fighters = names.map((name) => ({
+    name,
+    weapon: picked.weapon,
+    armor: picked.armor,
+  }));
+  const stock = [];
+  const cost = loadoutCost(fighters, stock, config);
+  if (cost > wallet) fail(`Закупка ${side} ${cost} дороже кошелька ${wallet}`);
   return {
+    side,
     fighters,
-    utility,
+    stock,
     cost,
-    weapon,
-    templateId: template.id,
+    weapon: picked.weapon,
+    armor: picked.armor,
+    route,
+    templateId: route.id,
   };
+}
+
+export function scriptFromRoute(route, names) {
+  return route.moves.map((step) => ({
+    moves: names.map((name, index) => ({ name, to: step[index] })),
+    throws: [],
+  }));
 }

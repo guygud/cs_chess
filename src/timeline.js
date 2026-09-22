@@ -1,114 +1,47 @@
 import { CONFIG } from './config.js';
-import { compare } from './engine.js';
 
-const TITLES = {
-  reveal: 'Вскрытие',
-  mid: 'Мид',
-  transfer: 'Переброс',
-  rotator: 'Ротатор',
-  utility: 'Гранаты',
-  siteA: 'Сайт A',
-  siteB: 'Сайт B',
-  result: 'Итог',
-};
-
-function formatStrength(value) {
+export function formatStrength(value) {
   const rounded = Math.round(value * 100) / 100;
-  if (Number.isInteger(rounded)) return String(rounded);
-  return rounded.toFixed(2).replace(/0$/, '').replace('.', ',');
+  return String(rounded).replace('.', ',');
 }
 
-function pointName(id) {
-  return CONFIG.points[id] ? CONFIG.points[id].name : id;
+function countWord(count) {
+  return ['', 'один', 'двое', 'трое', 'четверо', 'пятеро'][count] || String(count);
 }
 
-function sideName(side) {
-  return side === 'attack' ? 'Атака' : 'Защита';
+export function resultText(fight) {
+  if (!fight?.contact) return '';
+  const bits = [`${formatStrength(fight.attackFinal)} против ${formatStrength(fight.defenseFinal)}.`];
+  const enemyDead = fight.present.filter((person) => person.side === 'defense' && person.died);
+  const ownDead = fight.present.filter((person) => person.side === 'attack' && person.died);
+  if (enemyDead.length > 1) bits.push(`Их ${countWord(enemyDead.length)} легли.`);
+  else if (enemyDead.length === 1) bits.push(`${enemyDead[0].name} погиб.`);
+  if (ownDead.length === 1) bits.push(`${ownDead[0].name} погиб.`);
+  else if (ownDead.length > 1) bits.push(`Ваши легли: ${ownDead.map((person) => person.name).join(', ')}.`);
+  const saved = fight.present.filter((person) => person.saved);
+  if (saved.length) bits.push(`Броник спас: ${saved.map((person) => person.name).join(', ')}.`);
+  return bits.join(' ');
 }
 
-export function stageTitle(id) {
-  return TITLES[id] || id;
+export function endText(state) {
+  if (!state?.winner) return '';
+  if (state.endReason === 'bomb') return 'Бомба не обезврежена. Раунд ваш.';
+  if (state.endReason === 'defuse') return 'Бомбу обезвредили. Раунд защиты.';
+  if (state.endReason === 'wipe' && state.winner === 'attack') return 'Защита выбита. Раунд ваш.';
+  if (state.endReason === 'wipe') return 'Вас выбили. Раунд защиты.';
+  if (state.endReason === 'alive' && state.winner === 'attack') return 'Бомбы не было. Живых больше у вас.';
+  return 'Бомбы не было. Живых не больше, раунд защиты.';
 }
 
-export function describeStage(stage, previous, result) {
-  const title = stageTitle(stage.id);
-  if (stage.id === 'reveal') {
-    return { title, text: 'Обе расстановки открыты. Выстрелов ещё нет.' };
+export function cellNote(cellId, step, truth) {
+  const bits = [];
+  const fight = step?.fights[cellId];
+  if (fight && (truth || fight.contact)) {
+    const smoke = (fight.smoke.attack || 0) + (fight.smoke.defense || 0);
+    if (smoke) bits.push(`Дымовая −${formatStrength(smoke)}.`);
+    if (fight.flash.attack || fight.flash.defense) bits.push('Световая в этой клетке.');
   }
-  if (stage.id === 'mid') {
-    const point = stage.points[stage.focus];
-    const who = point.control === 'attack' ? 'атака' : point.control === 'defense' ? 'защита' : 'никто';
-    let text = `Атака ${formatStrength(point.attackStrength)}, защита ${formatStrength(point.defenseFinal)}. Мид берёт ${who}.`;
-    if (point.smokePenalty) text += ` Смоук уже снял ${formatStrength(point.smokePenalty)}.`;
-    if (point.flash && point.control === 'attack' && compare(point.attackStrength, point.defenseFinal) === 0) {
-      text += ' Ничью забрал флеш.';
-    }
-    return { title, text };
-  }
-  if (stage.id === 'transfer') {
-    if (!stage.transfer) return { title, text: 'Переброса нет.' };
-    const move = stage.transfer;
-    let text = `${sideName(move.side)} переносит ${move.name} с\u00A0мида на\u00A0${pointName(move.to)}.`;
-    if (compare(move.strengthBefore, move.strengthAfter) !== 0) {
-      text += ` Сила ${formatStrength(move.strengthBefore)} → ${formatStrength(move.strengthAfter)}.`;
-    }
-    return { title, text };
-  }
-  if (stage.id === 'rotator') {
-    if (!stage.rotator || !stage.rotator.point) {
-      return { title, text: 'Ротатор не вышел: на сайтах некого встречать.' };
-    }
-    return {
-      title,
-      text: `${stage.rotator.name} вышел на\u00A0${pointName(stage.rotator.point)} и\u00A0добавил ${formatStrength(stage.rotator.strength)} к\u00A0защите.`,
-    };
-  }
-  if (stage.id === 'utility') {
-    const changes = [];
-    for (const id of CONFIG.pointOrder) {
-      const before = previous.points[id].defenseFinal;
-      const after = stage.points[id].defenseFinal;
-      if (compare(before, after) !== 0) {
-        changes.push(`${pointName(id)}: ${formatStrength(before)} → ${formatStrength(after)}`);
-      }
-    }
-    let text = changes.length
-      ? `Смоук изменил защиту. ${changes.join('. ')}.`
-      : 'Смоуков нет, сила защиты не изменилась.';
-    if (stage.flashes.length) {
-      const names = stage.flashes.map((id) => pointName(id)).join(', ');
-      text += ` Флеш на\u00A0${names}: ничья уйдёт атаке, если там есть её боец.`;
-    }
-    return { title, text };
-  }
-  if (stage.id === 'result') {
-    const who = result.winner === 'attack' ? 'атакой' : 'защитой';
-    const sites = result.takenSites.length
-      ? `Проход на\u00A0${result.takenSites.map((id) => pointName(id)).join(' и\u00A0')}.`
-      : 'Оба сайта удержаны.';
-    return { title, text: `Раунд за\u00A0${who}. ${sites}` };
-  }
-  const point = stage.points[stage.focus];
-  const outcome = point.control === 'attack' ? 'Сайт взят.' : 'Сайт удержан.';
-  let text = `Атака ${formatStrength(point.attackStrength)}, защита ${formatStrength(point.defenseFinal)}. ${outcome}`;
-  if (point.flash && point.control === 'attack' && compare(point.attackStrength, point.defenseFinal) === 0) {
-    text += ' Решила ничья и\u00A0флеш.';
-  }
-  return { title, text };
-}
-
-export function changedOn(stages, pointId) {
-  let found = stages[0].id;
-  let previous = stages[0].points[pointId];
-  for (const stage of stages.slice(1)) {
-    const next = stage.points[pointId];
-    const moved = compare(previous.attackStrength, next.attackStrength) !== 0
-      || compare(previous.defenseFinal, next.defenseFinal) !== 0
-      || previous.control !== next.control;
-    if (moved) {
-      found = stage.id;
-      previous = next;
-    }
-  }
-  return found;
+  if (step?.planted === cellId) bits.push('Бомба поставлена.');
+  if (step?.defused && step.state.bomb?.point === cellId) bits.push('Бомба обезврежена.');
+  return bits.join(' ');
 }
