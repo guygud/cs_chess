@@ -61,8 +61,14 @@ export function mapMarkup() {
   }).join('');
   return `
     <svg class="radar" viewBox="${box}" role="img" aria-label="${map.name}">
+      <defs>
+        <marker id="aim-head" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <path d="M0 0 L8 4 L0 8 Z"></path>
+        </marker>
+      </defs>
       <rect class="ground" x="0" y="0" width="${map.viewBox.width}" height="${map.viewBox.height}"></rect>
       ${lines}
+      <g class="aim-arrows"></g>
     </svg>
   `;
 }

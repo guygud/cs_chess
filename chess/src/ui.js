@@ -147,7 +147,7 @@ export function render(state) {
           <div><b>5×5</b><span>компактно, больше тактики</span></div>
           <div><b>2+1</b><span>быстрые партии</span></div>
         </div>
-        <p class="warn">Король не может войти под\u00A0шах.</p>
+        <p class="warn">Король не входит под\u00A0шах. На\u00A0F ему можно встать и\u00A0под боем: это победа.</p>
         <a class="back" href="../">Сборка Dust2</a>
       </aside>
       <main class="stage">

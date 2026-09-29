@@ -180,11 +180,16 @@ function leavesKingSafe(board, move, side) {
   return !isInCheck(next, side);
 }
 
+function stepsOnPlant(pos, move) {
+  return pos.side === ATTACK && pos.board[move.from] === KING && move.to === pos.plant;
+}
+
 export function legalMoves(pos) {
   if (pos.result) return [];
   if (pos.moves) return pos.moves;
   const pseudo = pseudoMoves(pos.board, pos.side);
-  pos.moves = pseudo.filter((move) => leavesKingSafe(pos.board, move, pos.side));
+  // Шаг короля Т на F заканчивает партию, поэтому клетка может быть под боем.
+  pos.moves = pseudo.filter((move) => stepsOnPlant(pos, move) || leavesKingSafe(pos.board, move, pos.side));
   return pos.moves;
 }
 
@@ -209,9 +214,10 @@ export function createPosition(config = CONFIG) {
   };
 }
 
-function settle(next, mover, config) {
+function settle(next, config) {
   const king = kingSquare(next.board, ATTACK);
-  if (king === next.plant && mover === ATTACK) {
+  // Король уже на F — победа, даже если клетка под шахом и даже если ходила защита.
+  if (king === next.plant) {
     return { winner: 'attack', reason: 'plant' };
   }
   // Мат не победа: сторона под шахом без хода просто пропускает очередь.
@@ -249,7 +255,7 @@ export function makeMove(pos, move, config = CONFIG) {
     plant: pos.plant,
     result: null,
   };
-  next.result = settle(next, pos.side, config);
+  next.result = settle(next, config);
   return next;
 }
 

@@ -1,6 +1,8 @@
 import { CONFIG } from './config.js';
-import { applyRoundEconomy, canStep, loadoutCost, matchStatus, playRound, resolveMove, createRound, neighbors, weaponStrength, visibleCells, remember } from './engine.js';
-import { assertRoutes, defenseOrders, planRound, scriptFromRoute } from './bot.js';
+import { applyRoundEconomy, bestBuy, buyCost, canStep, matchStatus, movesLimit, playRound, resolveMove, createRound, neighbors, weaponStrength, visibleCells, remember } from './engine.js';
+import { defenseOrders, planRound } from './bot.js';
+import { assertPlays, commitOrders, ordersFromPlay } from './plays.js';
+import { LESSONS, lessonAttackOrders, lessonDefenseOrders, lessonRound } from './tutorial.js';
 
 function expect(condition, message) {
   if (!condition) throw new Error(message);
@@ -44,7 +46,7 @@ function roads(spawn, plant, config = CONFIG) {
 }
 
 function selfCheck() {
-  assertRoutes(CONFIG);
+  assertPlays(CONFIG);
   expect(weaponStrength('rifle') === 3, 'Автомат даёт 3');
   expect(weaponStrength('pistol') === 1, 'Пистолет даёт 1');
   expect(CONFIG.edges.length === 16, 'На карте шестнадцать связей');
@@ -277,12 +279,16 @@ function selfCheck() {
   expect(crushed.fights.PLANTA.present.filter((person) => person.side === 'defense' && person.died).length === 1, 'При ничьей троим защиты стоит одного');
   expect(crushed.fights.PLANTA.present.filter((person) => person.side === 'attack' && person.died).length === 3, 'Пятёрке ничья стоит троих: двое в проходе и один в бою');
 
-  const burned = loadoutCost(
-    names.map((name) => ({ name, weapon: 'pistol', armor: false })),
-    ['smoke'],
-    CONFIG,
+  expect(buyCost('eco') === 0 && buyCost('force') === 2000 && buyCost('full') === 4000, 'Закуп стоит 0, 2\u00A0000 и\u00A04\u00A0000');
+  expect(bestBuy(800).id === 'eco', 'Со стартовыми деньгами берётся только эко');
+  expect(bestBuy(2600).id === 'force', 'После поражения хватает на форс');
+  expect(bestBuy(4200).id === 'full' && bestBuy(4200).stock[0] === 'smoke', 'После победы хватает на фулл с дымовой');
+  const rich = planRound('defense', 4200, CONFIG, () => 0);
+  expect(
+    rich.weapon === 'rifle' && rich.armor && rich.cost === 4000
+    && rich.stock.includes('smoke') && rich.stock.includes('flash'),
+    'Фулл даёт автомат, броник, дымовую и световую',
   );
-  expect(burned === CONFIG.utility.smoke.cost, 'Неброшенная граната всё равно в цене раунда');
 
   const planted = playRound(pack('attack'), pack('defense'), {
     attack: [
@@ -299,7 +305,8 @@ function selfCheck() {
     ],
   });
   expect(planted.log[2].planted === 'PLANTB', 'Пустой плент ставит бомбу на третьем ходу');
-  expect(planted.state.winner === 'attack' && planted.state.endReason === 'bomb', 'Неснятая бомба после четвёртого хода отдаёт раунд атаке');
+  expect(planted.state.winner === 'attack' && planted.state.endReason === 'bomb', 'Неснятая бомба отдаёт раунд атаке');
+  expect(planted.log.length === CONFIG.rules.movesPerRound, 'Ранняя бомба раунд не удлиняет: такты на ретейк уже были');
 
   const defused = playRound(pack('attack'), pack('defense'), {
     attack: [
@@ -337,6 +344,90 @@ function selfCheck() {
   expect(bodies.state.fighters.filter((fighter) => fighter.side === 'defense' && fighter.alive).length === 3, 'Проигравшие в клетке гибнут, остальные целы');
   expect(bodies.state.endReason === 'alive' && bodies.state.winner === 'defense', 'Без бомбы побеждает сторона, у которой больше живых');
 
+  const fresh = createRound(pack('attack'), pack('defense'));
+  const rushTo = ordersFromPlay('rush-a', 'attack', fresh).moves.map((move) => move.to);
+  expect(rushTo.every((cell) => cell === 'OUTLONG'), 'Раш ведёт всех одной внешней дорогой');
+  const splitTo = ordersFromPlay('split-a', 'attack', fresh).moves.map((move) => move.to);
+  expect(splitTo.filter((cell) => cell === 'OUTLONG').length === 3 && splitTo.filter((cell) => cell === 'MID').length === 2, 'Сплит делит пятёрку 3 и 2');
+  const fakeTo = ordersFromPlay('rush-a', 'attack', fresh, CONFIG, { fake: true }).moves.map((move) => move.to);
+  expect(fakeTo.filter((cell) => cell === 'OUTLONG').length === 3, 'Фейк оставляет троих на муве');
+  expect(fakeTo.filter((cell) => cell === 'UPTUNNEL').length === 2, 'Фейк уводит двоих на другую дорогу');
+  const stackTo = ordersFromPlay('stack-a', 'defense', fresh).moves.map((move) => move.to);
+  expect(
+    stackTo.filter((cell) => cell === 'LONG').length === 2
+    && stackTo.filter((cell) => cell === 'SHORT').length === 2
+    && stackTo.filter((cell) => cell === 'MID').length === 1,
+    'Стак садится на дороги',
+  );
+  const doors = createRound(pack('attack'), pack('defense'));
+  place(doors, { [defenseNames[0]]: 'SHORT', [defenseNames[1]]: 'LONG' });
+  const retakeTo = Object.fromEntries(ordersFromPlay('retake-a', 'defense', doors).moves.map((move) => [move.name, move.to]));
+  expect(retakeTo[defenseNames[0]] === 'PLANTA' && retakeTo[defenseNames[1]] === 'PLANTA', 'Ретейк с дверей идёт на плент');
+  let walked = fresh;
+  for (let index = 0; index < 3; index += 1) {
+    walked = resolveMove(walked, {
+      attack: ordersFromPlay('rush-a', 'attack', walked),
+      defense: stay(defenseNames, 'CTSPAWN'),
+    }, CONFIG).state;
+  }
+  expect(walked.fighters.filter((fighter) => fighter.side === 'attack').every((fighter) => fighter.point === 'PLANTA'), 'Раш собирает всех на пленте');
+  const smokedHold = createRound(pack('attack', 'rifle', true, ['smoke']), pack('defense'));
+  place(smokedHold, {
+    [names[0]]: 'OUTLONG',
+    [names[1]]: 'OUTLONG',
+    [names[2]]: 'OUTLONG',
+    [names[3]]: 'OUTLONG',
+    [names[4]]: 'OUTLONG',
+    [defenseNames[0]]: 'LONG',
+    [defenseNames[1]]: 'LONG',
+  });
+  const picked = commitOrders('rush-a', 'attack', smokedHold, CONFIG, { grenade: 'smoke' });
+  expect(
+    picked.throws.some((item) => item.type === 'smoke' && item.point === 'LONG'),
+    'Выбранная дымовая летит в клетку, куда идёт основная группа',
+  );
+  expect(
+    commitOrders('rush-a', 'attack', smokedHold, CONFIG).throws.length === 0,
+    'Без выбора игрока граната не тратится',
+  );
+  expect(
+    commitOrders('rush-a', 'attack', smokedHold, CONFIG, { grenade: 'flash' }).throws.length === 0,
+    'Гранаты, которой нет в закупе, не бросить',
+  );
+  const botThrow = commitOrders('retake-a', 'defense', smokedHold, CONFIG, { grenade: 'auto' });
+  expect(botThrow.throws.length === 0, 'Бот не кидает гранату из пустого закупа');
+
+  const lateBomb = createRound(pack('attack'), pack('defense'));
+  place(lateBomb, Object.fromEntries([
+    ...names.map((name) => [name, 'PLANTA']),
+    ...defenseNames.map((name) => [name, 'LONG']),
+  ]));
+  lateBomb.move = CONFIG.rules.movesPerRound - 1;
+  const lastTick = resolveMove(lateBomb, {
+    attack: stay(names, 'PLANTA'),
+    defense: stay(defenseNames, 'LONG'),
+  }, CONFIG);
+  expect(lastTick.planted === 'PLANTA', 'Бомба встаёт и на последнем такте');
+  expect(!lastTick.state.winner, 'После постановки раунд не кончается: есть такт на разминирование');
+  expect(movesLimit(lastTick.state, CONFIG) === CONFIG.rules.movesPerRound + 1, 'Бомба продлевает раунд на один такт');
+  const defuseTick = resolveMove(lastTick.state, {
+    attack: stay(names, 'SHORT'),
+    defense: ordersFromPlay('retake-a', 'defense', lastTick.state),
+  }, CONFIG);
+  expect(defuseTick.state.winner === 'defense' && defuseTick.state.endReason === 'defuse', 'Защита успевает снять бомбу на добавочном такте');
+  const heldTick = resolveMove(lastTick.state, {
+    attack: stay(names, 'PLANTA'),
+    defense: stay(defenseNames, 'LONG'),
+  }, CONFIG);
+  expect(heldTick.state.winner === 'attack' && heldTick.state.endReason === 'bomb', 'Не дошли до плента — бомба решает раунд');
+  expect(
+    !resolveMove(lastTick.state, {
+      attack: stay(names, 'PLANTA'),
+      defense: stay(defenseNames, 'LONG'),
+    }, CONFIG).planted,
+    'На добавочном такте вторую бомбу не поставить',
+  );
+
   const approach = createRound(pack('attack'), pack('defense'));
   place(approach, {
     [names[0]]: 'OUTLONG',
@@ -350,13 +441,7 @@ function selfCheck() {
     [defenseNames[3]]: 'BDOORS',
     [defenseNames[4]]: 'MID',
   });
-  const react = defenseOrders(
-    CONFIG.routes.defense.find((route) => route.id === 'both'),
-    defenseNames,
-    1,
-    approach,
-    CONFIG,
-  );
+  const react = defenseOrders(approach, CONFIG);
   const reactTo = Object.fromEntries(react.moves.map((item) => [item.name, item.to]));
   expect(
     reactTo[defenseNames[2]] !== 'BDOORS' || reactTo[defenseNames[3]] !== 'BDOORS',
@@ -381,13 +466,7 @@ function selfCheck() {
     [defenseNames[4]]: 'LONG',
   });
   retake.bomb = { point: 'PLANTA' };
-  const save = defenseOrders(
-    CONFIG.routes.defense.find((route) => route.id === 'both'),
-    defenseNames,
-    3,
-    retake,
-    CONFIG,
-  );
+  const save = defenseOrders(retake, CONFIG);
   const saveTo = Object.fromEntries(save.moves.map((item) => [item.name, item.to]));
   expect(saveTo[defenseNames[3]] === 'PLANTA', 'Кто на шорте, идёт обезвреживать');
   expect(saveTo[defenseNames[4]] === 'PLANTA', 'Кто на лонге, идёт обезвреживать');
@@ -395,17 +474,61 @@ function selfCheck() {
     saveTo[defenseNames[0]] !== 'PLANTB' && saveTo[defenseNames[1]] !== 'PLANTB',
     'С плента B не держат пустой сайт при бомбе на A',
   );
+
+  const buyLesson = LESSONS.find((lesson) => lesson.id === 'buy');
+  const full = CONFIG.buys.find((buy) => buy.id === 'full');
+  expect(buyLesson.wallet === 2000, 'Урок закупа начинается с 2000');
+  expect(buyLesson.allow.buys.includes('force') && !buyLesson.allow.buys.includes('eco'), 'Урок закупа просит форс');
+  expect(full.cost > buyLesson.wallet, 'На уроке закупа фулл не по карману');
+
+  for (const lesson of LESSONS) {
+    if (!lesson.expect) continue;
+    const round = lessonRound(lesson);
+    const step = resolveMove(round, {
+      attack: lessonAttackOrders(lesson, round),
+      defense: lessonDefenseOrders(lesson, round),
+    });
+    const fight = step.fights[lesson.expect.cell];
+    const there = step.state.fighters.filter((fighter) => (
+      fighter.side === 'attack' && fighter.point === lesson.expect.cell
+    )).length;
+    if (lesson.expect.contact != null) {
+      expect(Boolean(fight?.contact) === lesson.expect.contact, `${lesson.title}: контакт`);
+    }
+    if (lesson.expect.attackThere) {
+      expect(there === lesson.expect.attackThere, `${lesson.title}: все дошли`);
+    }
+    if (lesson.expect.outcome) {
+      expect(fight.outcome === lesson.expect.outcome, `${lesson.title}: исход боя`);
+    }
+    if (lesson.expect.attackFinal != null) {
+      expect(fight.attackFinal === lesson.expect.attackFinal, `${lesson.title}: сила атаки ${fight.attackFinal}`);
+      expect(fight.defenseFinal === lesson.expect.defenseFinal, `${lesson.title}: сила защиты ${fight.defenseFinal}`);
+    }
+    if (lesson.expect.attackCount) {
+      expect(fight.attackCount === lesson.expect.attackCount, `${lesson.title}: толпа в клетке`);
+    }
+    if (lesson.expect.smoke) {
+      expect(
+        step.thrown.attack.some((item) => item.type === 'smoke' && item.point === lesson.expect.smoke),
+        `${lesson.title}: дымовая в клетке боя`,
+      );
+    }
+  }
 }
 
-function playAgainstDefense(attack, defense, attackScript, route, config = CONFIG) {
+function playAgainstDefense(attack, defense, attackPlays, config = CONFIG) {
   let state = createRound(attack, defense, config);
   const log = [];
-  for (let index = 0; index < config.rules.movesPerRound; index += 1) {
+  const hardStop = config.rules.movesPerRound + (config.rules.defuseMoves || 0);
+  for (let index = 0; index < hardStop; index += 1) {
     if (state.winner) break;
-    const step = resolveMove(state, {
-      attack: attackScript[index] || { moves: [], throws: [] },
-      defense: defenseOrders(route, config.rosters.defense, index, state, config),
-    }, config);
+    // На добавочном такте атака держит то же, что и на последнем основном.
+    const entry = attackPlays[index] || attackPlays[attackPlays.length - 1];
+    const attackOrders = commitOrders(entry, 'attack', state, config, { grenade: 'auto' });
+    const defensePlan = defenseOrders(state, config);
+    const step = resolveMove(state, { attack: attackOrders, defense: defensePlan }, config);
+    step.plays = { attack: attackOrders.label, defense: defensePlan.label };
     log.push(step);
     state = step.state;
   }
@@ -441,8 +564,7 @@ function playMatch(config, rng) {
     const played = playAgainstDefense(
       { fighters: attack.fighters, stock: attack.stock },
       { fighters: defense.fighters, stock: defense.stock },
-      scriptFromRoute(attack.route, config.rosters.attack),
-      defense.route,
+      attack.probe.plays,
       config,
     );
     const applied = applyRoundEconomy(
@@ -494,13 +616,16 @@ if (matches > 0) {
 
   const splitRng = mulberry32(seed + 1);
   const probeRounds = 200;
-  const probe = (routeId) => {
-    const route = CONFIG.routes.attack.find((item) => item.id === routeId);
-    const script = scriptFromRoute(route, CONFIG.rosters.attack);
+  const probe = (probeId) => {
+    const script = CONFIG.probes.find((item) => item.id === probeId);
     let wins = 0;
     for (let index = 0; index < probeRounds; index += 1) {
       const defense = planRound('defense', CONFIG.economy.startMoney, CONFIG, splitRng);
-      const played = playAgainstDefense(pack('attack'), pack('defense'), script, defense.route);
+      const played = playAgainstDefense(
+        pack('attack'),
+        { fighters: defense.fighters, stock: defense.stock },
+        script.plays,
+      );
       if (played.state.winner === 'attack') wins += 1;
     }
     return wins;
@@ -512,5 +637,5 @@ if (matches > 0) {
   }
   const siteA = probe('fast-a-long') + probe('fast-a-short');
   const siteB = probe('fast-b-tunnel') + probe('fast-b-mid');
-  console.log(`Плент A ${siteA} из ${probeRounds * 2}, плент B ${siteB} из ${probeRounds * 2}`);
+  console.log(`Плент А ${siteA} из ${probeRounds * 2}, плент Б ${siteB} из ${probeRounds * 2}`);
 }

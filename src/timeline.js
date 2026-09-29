@@ -24,6 +24,33 @@ export function resultText(fight) {
   return bits.join(' ');
 }
 
+export function playCaption(step) {
+  if (!step?.plays?.attack) return '';
+  const bot = step.plays.defense ? ` Бот: ${step.plays.defense}.` : '';
+  return `Вы: ${step.plays.attack}.${bot}`;
+}
+
+// Фейк сработал, если бот увёл людей туда, куда ушла двойка.
+export function fakeCaption(step, config = CONFIG) {
+  const { fakeZone, defenseZone } = step?.plays || {};
+  if (!fakeZone) return '';
+  const label = (cellId) => config.map.cells[cellId]?.label || cellId;
+  if (defenseZone === fakeZone) return `Фейк сработал: бот ушёл на\u00A0${label(fakeZone)}.`;
+  if (config.map.cells[defenseZone]?.plant) return `Фейк не сработал: бот держит ${label(defenseZone)}.`;
+  return 'Фейк не сработал: бот не повёлся.';
+}
+
+export function throwCaption(step, side, config = CONFIG) {
+  const items = step?.thrown?.[side] || [];
+  if (!items.length) return '';
+  return items.map((item) => {
+    const name = config.utility[item.type]?.name || item.type;
+    const cell = config.map.cells[item.point]?.label || item.point;
+    const who = side === 'attack' ? `Ваша ${name.toLowerCase()}` : `${name} бота`;
+    return `${who}\u00A0— в\u00A0${cell}.`;
+  }).join(' ');
+}
+
 export function endText(state) {
   if (!state?.winner) return '';
   if (state.endReason === 'bomb') return 'Бомба не обезврежена. Раунд ваш.';

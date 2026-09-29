@@ -19,16 +19,34 @@ export function weaponStrength(weaponId, config = CONFIG) {
   return weapon.strength;
 }
 
-export function loadoutCost(fighters, utility, config = CONFIG) {
-  let cost = 0;
-  for (const fighter of fighters) {
-    cost += config.weapons[fighter.weapon].cost;
-    if (fighter.armor) cost += config.armor.cost;
-  }
-  for (const item of utility || []) {
-    cost += config.utility[item.type || item].cost;
-  }
-  return cost;
+export function buyById(buyId, config = CONFIG) {
+  const buy = config.buys.find((item) => item.id === buyId);
+  if (!buy) fail(`Неизвестный закуп: ${buyId}`);
+  return buy;
+}
+
+export function buyCost(buyId, config = CONFIG) {
+  return buyById(buyId, config).cost;
+}
+
+export function loadoutFromBuy(side, buyId, config = CONFIG) {
+  const buy = buyById(buyId, config);
+  return {
+    fighters: config.rosters[side].map((name) => ({
+      name,
+      weapon: buy.weapon,
+      armor: buy.armor,
+    })),
+    stock: [...buy.stock],
+    cost: buy.cost,
+    weapon: buy.weapon,
+    armor: buy.armor,
+    buyId: buy.id,
+  };
+}
+
+export function bestBuy(wallet, config = CONFIG) {
+  return [...config.buys].reverse().find((buy) => buy.cost <= wallet) || config.buys[0];
 }
 
 export function roundReward(won, lossStreak, config = CONFIG) {
@@ -306,6 +324,19 @@ export function createRound(attack, defense, config = CONFIG) {
   };
 }
 
+// После постановки у защиты всегда есть ход на разминирование.
+// Ранняя бомба раунд не удлиняет: такты на ретейк у защиты уже были.
+export function movesLimit(state, config = CONFIG) {
+  const base = config.rules.movesPerRound;
+  if (!state.bomb || state.defused) return base;
+  return Math.max(base, state.bomb.move + (config.rules.defuseMoves || 0));
+}
+
+// Ставить можно на основных тактах: добавочный такт нужен только защите.
+export function plantWindow(state, config = CONFIG) {
+  return state.move <= config.rules.movesPerRound;
+}
+
 function finishRound(state, config) {
   const attackAlive = state.fighters.filter((fighter) => fighter.side === 'attack' && fighter.alive).length;
   const defenseAlive = state.fighters.filter((fighter) => fighter.side === 'defense' && fighter.alive).length;
@@ -319,7 +350,7 @@ function finishRound(state, config) {
     state.endReason = 'defuse';
     return;
   }
-  if (state.move < config.rules.movesPerRound) return;
+  if (state.move < movesLimit(state, config)) return;
   if (state.bomb) {
     state.winner = 'attack';
     state.endReason = 'bomb';
@@ -436,7 +467,7 @@ export function resolveMove(round, orders, config = CONFIG) {
   state.owned = nextOwned;
 
   let planted = null;
-  if (!state.bomb) {
+  if (!state.bomb && plantWindow(state, config)) {
     const open = config.cellOrder.filter((cellId) => (
       config.map.cells[cellId].plant
       && living(state.fighters, cellId, 'attack').length > 0
@@ -477,7 +508,8 @@ export function resolveMove(round, orders, config = CONFIG) {
 export function playRound(attack, defense, scripts, config = CONFIG) {
   let state = createRound(attack, defense, config);
   const log = [];
-  for (let index = 0; index < config.rules.movesPerRound; index += 1) {
+  const hardStop = config.rules.movesPerRound + (config.rules.defuseMoves || 0);
+  for (let index = 0; index < hardStop; index += 1) {
     if (state.winner) break;
     const step = resolveMove(state, {
       attack: scripts.attack[index] || { moves: [], throws: [] },

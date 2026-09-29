@@ -4,6 +4,7 @@ import { analysisText } from './report.js';
 import {
   ATTACK,
   DEFENSE,
+  BISHOP,
   KING,
   KNIGHT,
   QUEEN,
@@ -62,7 +63,27 @@ const blockedPlant = put([
   ['e5', -KING],
   ['a5', -ROOK],
 ], ATTACK);
-assert(!hasMove(blockedPlant, 'b2', 'a2'), 'король не входит на F под шахом');
+assert(hasMove(blockedPlant, 'b2', 'a2'), 'король может шагнуть на F даже под шахом');
+const takenUnderFire = makeMove(blockedPlant, { from: parseSquare('b2'), to: parseSquare('a2') });
+assert(takenUnderFire.result?.winner === 'attack' && takenUnderFire.result.reason === 'plant', 'шаг на F под боем сразу выигрывает');
+
+const beside = put([
+  ['a3', KING],
+  ['a1', -QUEEN],
+  ['d5', -KING],
+  ['e5', -BISHOP],
+], ATTACK);
+assert(hasMove(beside, 'a3', 'a2'), 'ферзь с a1 держит F, но шаг короля на F всё равно легален');
+assert(hasMove(beside, 'a3', 'b3') && hasMove(beside, 'a3', 'b4'), 'с a3 под шахом остаются отходы b3 и b4');
+
+const already = put([
+  ['a2', KING],
+  ['a1', -QUEEN],
+  ['d5', -KING],
+  ['e5', -BISHOP],
+], DEFENSE);
+const stillThere = makeMove(already, { from: parseSquare('e5'), to: parseSquare('d4') });
+assert(stillThere.result?.winner === 'attack' && stillThere.result.reason === 'plant', 'король уже на F: победа, даже если ходит защита');
 
 const plant = put([
   ['b1', KING],

@@ -9,13 +9,13 @@ export const CONFIG = {
       UPTUNNEL: { label: 'Верхние туннели', x: 12, y: 10, w: 196, h: 200, owner: 'attack' },
       TSPAWN: { label: 'Т-спавн', x: 222, y: 10, w: 196, h: 200, owner: 'attack' },
       OUTLONG: { label: 'Выход на лонг', x: 432, y: 10, w: 196, h: 200, owner: 'attack' },
-      PLANTB: { label: 'Плент B', x: 12, y: 224, w: 196, h: 200, plant: true, owner: 'attack' },
+      PLANTB: { label: 'Плент Б', x: 12, y: 224, w: 196, h: 200, plant: true, owner: 'attack' },
       LOWTUNNEL: { label: 'Нижние туннели', x: 222, y: 224, w: 196, h: 200, owner: 'defense' },
       MID: { label: 'Центр', x: 432, y: 224, w: 196, h: 200, owner: 'defense' },
       LONG: { label: 'Лонг', x: 642, y: 224, w: 196, h: 200, owner: 'defense' },
-      BDOORS: { label: 'Двери B', x: 12, y: 438, w: 196, h: 200, owner: 'defense' },
+      BDOORS: { label: 'Двери Б', x: 12, y: 438, w: 196, h: 200, owner: 'defense' },
       SHORT: { label: 'Шорт', x: 432, y: 438, w: 196, h: 200, owner: 'defense' },
-      PLANTA: { label: 'Плент A', x: 642, y: 438, w: 196, h: 200, plant: true, owner: 'attack' },
+      PLANTA: { label: 'Плент А', x: 642, y: 438, w: 196, h: 200, plant: true, owner: 'attack' },
       CTSPAWN: { label: 'КТ-спавн', x: 222, y: 652, w: 196, h: 200, owner: 'defense' },
     },
   },
@@ -49,24 +49,31 @@ export const CONFIG = {
   plantTie: 'PLANTA',
 
   weapons: {
-    pistol: { id: 'pistol', name: 'Пистолет', cost: 0, strength: 1 },
-    smg: { id: 'smg', name: 'ПП', cost: 1200, strength: 2 },
-    rifle: { id: 'rifle', name: 'Автомат', cost: 2700, strength: 3 },
+    pistol: { id: 'pistol', name: 'Пистолет', strength: 1 },
+    smg: { id: 'smg', name: 'ПП', strength: 2 },
+    rifle: { id: 'rifle', name: 'Автомат', strength: 3 },
   },
   weaponOrder: ['pistol', 'smg', 'rifle'],
-  armor: { id: 'armor', name: 'Броник', cost: 800 },
+  armor: { id: 'armor', name: 'Броник' },
 
   utility: {
-    smoke: { id: 'smoke', name: 'Дымовая', cost: 300, penalty: 2 },
-    flash: { id: 'flash', name: 'Световая', cost: 200 },
+    smoke: { id: 'smoke', name: 'Дымовая', penalty: 2 },
+    flash: { id: 'flash', name: 'Световая' },
   },
   utilityOrder: ['smoke', 'flash'],
 
+  // Цена на всю команду. Оружие сгорает в конце раунда.
+  buys: [
+    { id: 'eco', label: 'Фул эко', cost: 0, weapon: 'pistol', armor: false, stock: [] },
+    { id: 'force', label: 'Форс', cost: 2000, weapon: 'smg', armor: true, stock: ['flash'] },
+    { id: 'full', label: 'Фулл', cost: 4000, weapon: 'rifle', armor: true, stock: ['smoke', 'flash'] },
+  ],
+
   economy: {
     startMoney: 800,
-    winReward: 3000,
-    lossBase: 1400,
-    lossStreakStep: 500,
+    winReward: 3400,
+    lossBase: 1800,
+    lossStreakStep: 600,
     maxLossStreakSteps: 3,
   },
 
@@ -74,6 +81,8 @@ export const CONFIG = {
     attackFighters: 5,
     defenseFighters: 5,
     movesPerRound: 4,
+    // Бомба встала — раунду добавляется такт: защита успевает прийти и снять.
+    defuseMoves: 1,
     holdMultiplier: 1.5,
     // В узкой клетке нормально стреляют двое, третий достаёт углом вполсилы,
     // остальные стоят за спинами и в бою не считаются — но гибнут и ловят гранаты.
@@ -82,17 +91,22 @@ export const CONFIG = {
     stackShooters: 3,
     // Защита считает угрозой атаку на пленте и на пути к нему (в шагах).
     threatRange: 2,
+    fakeFighters: 2,
     maxUtility: 2,
     winsNeeded: 3,
     maxRounds: 5,
     compareEpsilon: 1e-9,
   },
 
+  // При равной длине раш идёт внешней дорогой: лонг на A, туннели на B.
+  preferredLane: { PLANTA: 'LONG', PLANTB: 'LOWTUNNEL' },
+  preferredGate: { PLANTA: 'OUTLONG', PLANTB: 'UPTUNNEL' },
+
   ui: {
     playbackStepMs: 1100,
-    dragThreshold: 8,
-    buySeconds: 45,
-    moveSeconds: 30,
+    buySeconds: 20,
+    moveSeconds: 15,
+    moveAnimMs: 250,
   },
 
   rosters: {
@@ -100,170 +114,56 @@ export const CONFIG = {
     defense: ['Якорь', 'Сдвиг', 'Пост', 'Дозор', 'Бегун'],
   },
 
-  routes: {
+  plays: {
     attack: [
-      {
-        id: 'split-a',
-        weight: 16,
-        moves: [
-          ['OUTLONG', 'OUTLONG', 'OUTLONG', 'UPTUNNEL', 'UPTUNNEL'],
-          ['LONG', 'LONG', 'LONG', 'LOWTUNNEL', 'LOWTUNNEL'],
-          ['PLANTA', 'PLANTA', 'PLANTA', 'PLANTB', 'PLANTB'],
-          ['PLANTA', 'PLANTA', 'PLANTA', 'PLANTB', 'PLANTB'],
-        ],
-      },
-      {
-        id: 'split-b',
-        weight: 16,
-        moves: [
-          ['OUTLONG', 'OUTLONG', 'UPTUNNEL', 'UPTUNNEL', 'UPTUNNEL'],
-          ['LONG', 'LONG', 'LOWTUNNEL', 'LOWTUNNEL', 'LOWTUNNEL'],
-          ['PLANTA', 'PLANTA', 'PLANTB', 'PLANTB', 'PLANTB'],
-          ['PLANTA', 'PLANTA', 'PLANTB', 'PLANTB', 'PLANTB'],
-        ],
-      },
-      {
-        id: 'flex',
-        weight: 8,
-        moves: [
-          ['MID', 'MID', 'MID', 'OUTLONG', 'UPTUNNEL'],
-          ['SHORT', 'SHORT', 'LOWTUNNEL', 'LONG', 'LOWTUNNEL'],
-          ['PLANTA', 'PLANTA', 'PLANTB', 'PLANTA', 'PLANTB'],
-          ['PLANTA', 'PLANTA', 'PLANTB', 'PLANTA', 'PLANTB'],
-        ],
-      },
-      {
-        id: 'four-a',
-        weight: 6,
-        moves: [
-          ['OUTLONG', 'OUTLONG', 'OUTLONG', 'OUTLONG', 'UPTUNNEL'],
-          ['LONG', 'LONG', 'LONG', 'LONG', 'LOWTUNNEL'],
-          ['PLANTA', 'PLANTA', 'PLANTA', 'PLANTA', 'PLANTB'],
-          ['PLANTA', 'PLANTA', 'PLANTA', 'PLANTA', 'PLANTB'],
-        ],
-      },
-      {
-        id: 'four-b',
-        weight: 6,
-        moves: [
-          ['OUTLONG', 'UPTUNNEL', 'UPTUNNEL', 'UPTUNNEL', 'UPTUNNEL'],
-          ['LONG', 'LOWTUNNEL', 'LOWTUNNEL', 'LOWTUNNEL', 'LOWTUNNEL'],
-          ['PLANTA', 'PLANTB', 'PLANTB', 'PLANTB', 'PLANTB'],
-          ['PLANTA', 'PLANTB', 'PLANTB', 'PLANTB', 'PLANTB'],
-        ],
-      },
-      {
-        id: 'fast-a-long',
-        weight: 4,
-        moves: [
-          ['OUTLONG', 'OUTLONG', 'OUTLONG', 'OUTLONG', 'OUTLONG'],
-          ['LONG', 'LONG', 'LONG', 'LONG', 'LONG'],
-          ['PLANTA', 'PLANTA', 'PLANTA', 'PLANTA', 'PLANTA'],
-          ['PLANTA', 'PLANTA', 'PLANTA', 'PLANTA', 'PLANTA'],
-        ],
-      },
-      {
-        id: 'fast-a-short',
-        weight: 4,
-        moves: [
-          ['MID', 'MID', 'MID', 'MID', 'MID'],
-          ['SHORT', 'SHORT', 'SHORT', 'SHORT', 'SHORT'],
-          ['PLANTA', 'PLANTA', 'PLANTA', 'PLANTA', 'PLANTA'],
-          ['PLANTA', 'PLANTA', 'PLANTA', 'PLANTA', 'PLANTA'],
-        ],
-      },
-      {
-        id: 'fast-b-tunnel',
-        weight: 4,
-        moves: [
-          ['UPTUNNEL', 'UPTUNNEL', 'UPTUNNEL', 'UPTUNNEL', 'UPTUNNEL'],
-          ['LOWTUNNEL', 'LOWTUNNEL', 'LOWTUNNEL', 'LOWTUNNEL', 'LOWTUNNEL'],
-          ['PLANTB', 'PLANTB', 'PLANTB', 'PLANTB', 'PLANTB'],
-          ['PLANTB', 'PLANTB', 'PLANTB', 'PLANTB', 'PLANTB'],
-        ],
-      },
-      {
-        id: 'fast-b-mid',
-        weight: 4,
-        moves: [
-          ['MID', 'MID', 'MID', 'MID', 'MID'],
-          ['LOWTUNNEL', 'LOWTUNNEL', 'LOWTUNNEL', 'LOWTUNNEL', 'LOWTUNNEL'],
-          ['PLANTB', 'PLANTB', 'PLANTB', 'PLANTB', 'PLANTB'],
-          ['PLANTB', 'PLANTB', 'PLANTB', 'PLANTB', 'PLANTB'],
-        ],
-      },
+      { id: 'rush-a', action: 'rush', zone: 'PLANTA', label: 'Раш +\u00A0А', short: 'А' },
+      { id: 'rush-b', action: 'rush', zone: 'PLANTB', label: 'Раш +\u00A0Б', short: 'Б' },
+      { id: 'rush-mid', action: 'rush', zone: 'MID', label: 'Раш +\u00A0Мид', short: 'Мид' },
+      { id: 'split-a', action: 'split', zone: 'PLANTA', label: 'Сплит +\u00A0А', short: 'А' },
+      { id: 'split-b', action: 'split', zone: 'PLANTB', label: 'Сплит +\u00A0Б', short: 'Б' },
+      { id: 'regroup-spawn', action: 'regroup', zone: 'spawn', label: 'Регруп +\u00A0Спавн', short: 'Спавн' },
+      { id: 'regroup-mid', action: 'regroup', zone: 'MID', label: 'Регруп +\u00A0Мид', short: 'Мид' },
     ],
     defense: [
-      {
-        id: 'both',
-        weight: 26,
-        moves: [
-          ['LONG', 'LONG', 'SHORT', 'LOWTUNNEL', 'MID'],
-          ['LONG', 'LONG', 'SHORT', 'LOWTUNNEL', 'MID'],
-          ['LONG', 'LONG', 'SHORT', 'LOWTUNNEL', 'MID'],
-          ['LONG', 'LONG', 'SHORT', 'LOWTUNNEL', 'MID'],
-        ],
-      },
-      {
-        id: 'lanes',
-        weight: 12,
-        moves: [
-          ['LONG', 'LONG', 'SHORT', 'SHORT', 'MID'],
-          ['LONG', 'LONG', 'SHORT', 'SHORT', 'MID'],
-          ['LONG', 'LONG', 'SHORT', 'SHORT', 'MID'],
-          ['LONG', 'LONG', 'SHORT', 'SHORT', 'MID'],
-        ],
-      },
-      {
-        id: 'mid-hold',
-        weight: 20,
-        moves: [
-          ['LONG', 'SHORT', 'MID', 'MID', 'MID'],
-          ['LONG', 'SHORT', 'MID', 'MID', 'MID'],
-          ['LONG', 'SHORT', 'MID', 'MID', 'MID'],
-          ['LONG', 'SHORT', 'MID', 'MID', 'MID'],
-        ],
-      },
-      {
-        id: 'b-cover',
-        weight: 14,
-        moves: [
-          ['LONG', 'SHORT', 'LOWTUNNEL', 'LOWTUNNEL', 'MID'],
-          ['LONG', 'SHORT', 'LOWTUNNEL', 'LOWTUNNEL', 'MID'],
-          ['LONG', 'SHORT', 'LOWTUNNEL', 'LOWTUNNEL', 'MID'],
-          ['LONG', 'SHORT', 'LOWTUNNEL', 'LOWTUNNEL', 'MID'],
-        ],
-      },
-      {
-        id: 'long-heavy',
-        weight: 10,
-        moves: [
-          ['LONG', 'LONG', 'LONG', 'SHORT', 'MID'],
-          ['LONG', 'LONG', 'LONG', 'SHORT', 'MID'],
-          ['LONG', 'LONG', 'LONG', 'SHORT', 'MID'],
-          ['LONG', 'LONG', 'LONG', 'SHORT', 'MID'],
-        ],
-      },
-      {
-        id: 'short-heavy',
-        weight: 10,
-        moves: [
-          ['SHORT', 'SHORT', 'SHORT', 'LONG', 'MID'],
-          ['SHORT', 'SHORT', 'SHORT', 'LONG', 'MID'],
-          ['SHORT', 'SHORT', 'SHORT', 'LONG', 'MID'],
-          ['SHORT', 'SHORT', 'SHORT', 'LONG', 'MID'],
-        ],
-      },
-      {
-        id: 'tunnel-heavy',
-        weight: 10,
-        moves: [
-          ['LOWTUNNEL', 'LOWTUNNEL', 'LOWTUNNEL', 'LONG', 'SHORT'],
-          ['LOWTUNNEL', 'LOWTUNNEL', 'LOWTUNNEL', 'LONG', 'SHORT'],
-          ['LOWTUNNEL', 'LOWTUNNEL', 'LOWTUNNEL', 'LONG', 'SHORT'],
-          ['LOWTUNNEL', 'LOWTUNNEL', 'LOWTUNNEL', 'LONG', 'SHORT'],
-        ],
-      },
+      { id: 'stack-a', action: 'stack', zone: 'PLANTA', label: 'Стак +\u00A0А', short: 'А' },
+      { id: 'stack-b', action: 'stack', zone: 'PLANTB', label: 'Стак +\u00A0Б', short: 'Б' },
+      { id: 'split', action: 'split', zone: null, label: 'Сплит', short: 'Сплит' },
+      { id: 'retake-a', action: 'retake', zone: 'PLANTA', label: 'Ретейк +\u00A0А', short: 'А' },
+      { id: 'retake-b', action: 'retake', zone: 'PLANTB', label: 'Ретейк +\u00A0Б', short: 'Б' },
+      { id: 'regroup-spawn', action: 'regroup', zone: 'spawn', label: 'Регруп +\u00A0Спавн', short: 'Спавн' },
+      { id: 'regroup-mid', action: 'regroup', zone: 'MID', label: 'Регруп +\u00A0Мид', short: 'Мид' },
+      { id: 'save', action: 'save', zone: 'spawn', label: 'Сейв', short: 'Сейв' },
     ],
   },
+
+  // Зеркало бот-против-бота: четыре мува вместо таблицы клеток.
+  probes: [
+    { id: 'split-a', weight: 16, plays: ['split-a', 'split-a', 'split-a', 'split-a'] },
+    { id: 'split-b', weight: 16, plays: ['split-b', 'split-b', 'split-b', 'split-b'] },
+    { id: 'flex', weight: 8, plays: ['rush-mid', 'split-a', 'rush-a', 'rush-a'] },
+    {
+      id: 'fake-a',
+      weight: 6,
+      plays: [
+        { play: 'rush-a', fake: true },
+        { play: 'rush-a', fake: true },
+        { play: 'rush-a', fake: true },
+        { play: 'rush-a', fake: true },
+      ],
+    },
+    {
+      id: 'fake-b',
+      weight: 6,
+      plays: [
+        { play: 'rush-b', fake: true },
+        { play: 'rush-b', fake: true },
+        { play: 'rush-b', fake: true },
+        { play: 'rush-b', fake: true },
+      ],
+    },
+    { id: 'fast-a-long', weight: 4, plays: ['rush-a', 'rush-a', 'rush-a', 'rush-a'] },
+    { id: 'fast-a-short', weight: 4, plays: ['rush-mid', 'rush-a', 'rush-a', 'rush-a'] },
+    { id: 'fast-b-tunnel', weight: 4, plays: ['rush-b', 'rush-b', 'rush-b', 'rush-b'] },
+    { id: 'fast-b-mid', weight: 4, plays: ['rush-mid', 'rush-b', 'rush-b', 'rush-b'] },
+  ],
 };

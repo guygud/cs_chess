@@ -1,5 +1,5 @@
 import { CONFIG } from './config.js';
-import { bindDrag } from '../../src/dnd.js';
+import { bindDrag } from './dnd.js';
 import { MATE, attackScore, forcedWinner } from './engine.js';
 import { analysisText } from './report.js';
 import {
@@ -9,6 +9,7 @@ import {
   createPosition,
   findToken,
   isInCheck,
+  kingSquare,
   legalMovesFrom,
   makeMove,
   moveNotation,
@@ -104,6 +105,10 @@ function crash(error) {
 }
 
 function draw() {
+  if (state.phase === 'play' && state.pos && kingSquare(state.pos.board, ATTACK) === state.pos.plant) {
+    finish({ winner: 'attack', reason: 'plant' });
+    return;
+  }
   const flight = state.flight;
   state.flight = null;
   unbind();

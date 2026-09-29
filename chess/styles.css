@@ -184,8 +184,8 @@ h1 {
 
 .sq.dark { background: #4a5160; }
 .sq.light { background: #6d7482; }
-.sq.plant { background: var(--plant); }
 .sq.in-check { background: #8d2d2d; }
+.sq.plant { background: var(--plant); }
 .sq.last { box-shadow: inset 0 0 0 3px rgba(227, 146, 58, 0.95); }
 .sq.flight-dest { z-index: 4; }
 .sq.is-selected { box-shadow: inset 0 0 0 3px var(--orange); }
