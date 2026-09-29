@@ -7,7 +7,7 @@ import {
   visibleCells,
 } from './engine.js';
 import { cellBox, mapMarkup } from './board.js';
-import { grenadeTarget, ordersFromPlay, otherPlant } from './plays.js';
+import { contextPlays, grenadeTarget } from './plays.js';
 import {
   endText,
   fakeCaption,
@@ -16,7 +16,7 @@ import {
   resultText,
   throwCaption,
 } from './timeline.js';
-import { LESSONS, coachTarget, commitReady, lessonAt } from './tutorial.js?v=2';
+import { LESSONS, coachTarget, commitReady, lessonAt } from './tutorial.js?v=3';
 
 let timers = [];
 
@@ -59,7 +59,12 @@ function lessonHead(state) {
 function coachLine(state) {
   const lesson = lessonAt(state);
   if (!lesson || state.tutorial.beat) return '';
-  return `<p class="coach-line">${esc(lesson.task)}</p>`;
+  let task = lesson.task;
+  if (lesson.taskPlay && state.roundState) {
+    const play = contextPlays(state.roundState, CONFIG).plays.find((item) => item.id === lesson.taskPlay);
+    task = task.replaceAll('{play}', play?.label || '');
+  }
+  return `<p class="coach-line">${esc(task)}</p>`;
 }
 
 function skipControl() {
@@ -100,7 +105,7 @@ function rulesBlock() {
       <ul>
         <li>Матч до\u00A0${CONFIG.rules.winsNeeded} побед и\u00A0не больше ${CONFIG.rules.maxRounds} раундов. В\u00A0раунде ${CONFIG.rules.movesPerRound} хода. Обе стороны выбирают мув одновременно и\u00A0вслепую.</li>
         <li>Закуп один на\u00A0всю команду. Фул эко\u00A0— пистолеты. ${esc(force.label)}\u00A0— ${esc(CONFIG.weapons.smg.name)}, броник и\u00A0световая, ${formatMoney(force.cost)}. ${esc(full.label)}\u00A0— ${esc(CONFIG.weapons.rifle.name)}, броник, дымовая и\u00A0световая, ${formatMoney(full.cost)}. Оружие сгорает в\u00A0конце раунда.</li>
-        <li>Раш ведёт всех одной дорогой, сплит делит троих и\u00A0двоих по\u00A0двум дорогам, регруп собирает на\u00A0спавне или в\u00A0центре. На\u00A0закуп ${CONFIG.ui.buySeconds}\u00A0секунд, на\u00A0ход ${CONFIG.ui.moveSeconds}. Время вышло\u00A0— берётся лучший доступный закуп. Если мув не выбран, все стоят.</li>
+        <li>Список мувов собирается заново каждый ход: шаг к\u00A0пленту, стоять или отойти. На\u00A0плитке короткий счёт боя с\u00A0теми, кого видно. На\u00A0закуп ${CONFIG.ui.buySeconds}\u00A0секунд, на\u00A0ход ${CONFIG.ui.moveSeconds}. Время вышло\u00A0— берётся лучший доступный закуп. Если мув не выбран, все стоят.</li>
         <li>Фейк уводит ${CONFIG.rules.fakeFighters} бойцов на\u00A0другой плент. Защита подтягивается туда, где людей больше\u00A0— значит, на\u00A0вашем пленте её будет меньше. За\u00A0фейк платите тем, что двое до\u00A0боя не\u00A0дойдут.</li>
         <li>Граната бросается по\u00A0вашей кнопке и\u00A0летит в\u00A0клетку, куда идёт основная группа\u00A0— она подсвечена на\u00A0карте. Дымовая снимает ${CONFIG.utility.smoke.penalty} силы у\u00A0каждого чужого в\u00A0клетке. Световая выигрывает равный бой и\u00A0спасает своих от\u00A0потерь. На\u00A0раунд их столько, сколько в\u00A0закупе.</li>
         <li>Шаг только в\u00A0соседнюю клетку. До\u00A0плента вам три шага, защите два. Если бежите навстречу по\u00A0одной связи\u00A0— стычка на\u00A0дороге, без множителя. Выжившие доходят.</li>
@@ -125,6 +130,12 @@ function stepOf(state) {
   if (state.phase === 'review') return state.log[state.replayIndex] || null;
   if (state.phase === 'reveal') return state.log.at(-1) || null;
   return null;
+}
+
+function stageOf(state) {
+  if (state.phase !== 'reveal' && state.phase !== 'review') return 2;
+  if (state.tutorial?.beat) return 2;
+  return state.revealStage ?? 0;
 }
 
 function roundOf(state) {
@@ -215,7 +226,8 @@ function pieceLayer(state) {
   const truth = state.phase === 'review';
   const vision = attackVision(state);
   const step = stepOf(state);
-  const showHold = state.phase === 'reveal' || state.phase === 'review';
+  const stage = stageOf(state);
+  const showHold = stage >= 1 && (state.phase === 'reveal' || state.phase === 'review');
   const visible = [];
   for (const fighter of round.fighters) {
     const from = originPoint(state, fighter);
@@ -228,6 +240,7 @@ function pieceLayer(state) {
     const watched = truth || fighter.side === 'attack' || (vision.has(from) && vision.has(fighter.point));
     visible.push({
       ...fighter,
+      alive: stage < 2 ? true : fighter.alive,
       from,
       stayed,
       watched,
@@ -243,7 +256,7 @@ function pieceLayer(state) {
   for (const [cellId, group] of buckets) {
     group.forEach((fighter, index) => {
       const end = fanPoint(cellId, index, group.length);
-      const travel = fighter.watched && fighter.from !== cellId;
+      const travel = stage < 1 && fighter.watched && fighter.from !== cellId;
       const start = travel ? cellCenter(fighter.from) : end;
       pieces.push(pieceMarkup(fighter, { start, end }, {
         from: fighter.from,
@@ -314,8 +327,17 @@ function slotsMarkup(state, cellId, fog) {
   let defense = 0;
   if (!fog && round && state.phase !== 'buy') {
     const step = stepOf(state);
-    const fight = step?.fights[cellId];
-    if (fight) {
+    const fight = stageOf(state) >= 1 ? step?.fights[cellId] : null;
+    if (stageOf(state) < 1) {
+      const truth = state.phase === 'review';
+      const vision = attackVision(state);
+      for (const fighter of round.fighters) {
+        if (originPoint(state, fighter) !== cellId) continue;
+        if (fighter.side === 'defense' && !truth && !vision.has(cellId)) continue;
+        if (fighter.side === 'attack') attack += 1;
+        else defense += 1;
+      }
+    } else if (fight) {
       attack = fight.attackCount || 0;
       defense = fight.defenseCount || 0;
     } else {
@@ -345,8 +367,9 @@ function cellsMarkup(state) {
     const box = cellBox(cellId);
     const cell = CONFIG.map.cells[cellId];
     const owned = round?.owned?.[cellId] || cell.owner;
-    const fight = step?.fights[cellId];
-    const road = step ? Object.values(step.fights).filter((item) => (
+    const shown = stageOf(state) >= 1;
+    const fight = shown ? step?.fights[cellId] : null;
+    const road = shown && step ? Object.values(step.fights).filter((item) => (
       item.clash && item.contact && item.endpoints?.[0] === cellId
     )) : [];
     const touched = playerInFight(fight) || road.some(playerInFight);
@@ -430,16 +453,22 @@ function miniPoint(cellId) {
   ];
 }
 
-function miniMarkup(playId, state, options = {}) {
-  if (!state.roundState) return '';
-  let orders;
-  try {
-    orders = ordersFromPlay(playId, 'attack', state.roundState, CONFIG, {
-      fake: options.fake ?? state.draft.fake,
-    });
-  } catch (error) {
-    return '';
-  }
+function menuOf(state) {
+  if (!state.roundState) return { plays: [], fake: false };
+  return contextPlays(state.roundState, CONFIG, {
+    fake: state.draft.fake,
+    grenade: state.draft.grenade,
+    memory: state.memory,
+  });
+}
+
+function playEntry(state, playId = state.draft.play) {
+  if (!playId) return null;
+  return menuOf(state).plays.find((item) => item.id === playId) || null;
+}
+
+function miniMarkup(orders, state) {
+  if (!orders || !state.roundState) return '';
   const fake = new Set(orders.fake);
   const at = Object.fromEntries(state.roundState.fighters.map((fighter) => [fighter.name, fighter.point]));
   const lines = orders.moves.map((move) => {
@@ -447,7 +476,7 @@ function miniMarkup(playId, state, options = {}) {
     if (!from || from === move.to) return '';
     const [x1, y1] = miniPoint(from);
     const [x2, y2] = miniPoint(move.to);
-    const kind = fake.has(move.name) ? ' fake' : (options.dimMain ? ' dim' : '');
+    const kind = fake.has(move.name) ? ' fake' : '';
     return `<line class="mini-arrow${kind}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"></line>`;
   }).join('');
   const dots = CONFIG.cellOrder.map((cellId) => {
@@ -458,18 +487,8 @@ function miniMarkup(playId, state, options = {}) {
   return `<svg class="mini" viewBox="0 0 100 100" aria-hidden="true">${dots}${lines}</svg>`;
 }
 
-function fakeMini(state) {
-  const base = state.draft.play || CONFIG.plays.attack[0].id;
-  return miniMarkup(base, state, { fake: true, dimMain: true });
-}
-
 function plannedOrders(state, playId) {
-  if (!playId || !state.roundState) return null;
-  try {
-    return ordersFromPlay(playId, 'attack', state.roundState, CONFIG, { fake: state.draft.fake });
-  } catch (error) {
-    return null;
-  }
+  return playEntry(state, playId)?.orders || null;
 }
 
 function grenadeRow(state) {
@@ -491,68 +510,55 @@ function grenadeRow(state) {
     `;
   }).filter(Boolean).join('');
   if (!tiles) return '';
-  return `<div class="chips"><span class="chips-name">Граната</span>${tiles}</div>`;
+  return `<span class="chips-name">Граната</span>${tiles}`;
 }
 
 // Что случится, если нажать «Сделать ход» — словами, к стрелкам на карте.
-function planCaption(state) {
-  const play = state.draft.play
-    ? CONFIG.plays.attack.find((item) => item.id === state.draft.play)
-    : null;
-  if (!play) return 'Мув не выбран: все стоят на\u00A0месте.';
-  const orders = plannedOrders(state, play.id);
-  if (!orders) return play.label;
-  const label = (cellId) => CONFIG.map.cells[cellId]?.label || cellId;
-  const fakeNames = new Set(orders.fake || []);
-  const main = new Map();
-  for (const move of orders.moves) {
-    if (fakeNames.has(move.name)) continue;
-    main.set(move.to, (main.get(move.to) || 0) + 1);
-  }
-  const bits = [...main.entries()]
-    .sort((left, right) => right[1] - left[1])
-    .map(([cellId, count]) => `${count} в\u00A0${label(cellId)}`);
-  const parts = [`${play.label}: ${bits.join(', ')}`];
-  if (fakeNames.size && CONFIG.map.cells[play.zone]) {
-    parts.push(`фейк уводит ${fakeNames.size} на\u00A0${label(otherPlant(play.zone, CONFIG))}`);
-  }
-  const grenade = state.draft.grenade;
-  if (grenade && state.roundState.stock.attack.includes(grenade)) {
-    const point = grenadeTarget(orders, CONFIG);
-    if (point) parts.push(`${CONFIG.utility[grenade].name.toLowerCase()} в\u00A0${label(point)}`);
-  }
-  return `${parts.join(', ')}.`;
+function planCaption(state, playId = state.draft.play) {
+  const entry = playEntry(state, playId);
+  if (!entry) return 'Мув не выбран: все стоят на\u00A0месте.';
+  return entry.forecast?.sentence ? `${entry.forecast.sentence}.` : `${entry.label}.`;
+}
+
+function verdictMarkup(forecast) {
+  const tone = forecast?.tone || 'unknown';
+  const score = forecast?.score || '—';
+  return `<span class="verdict ${esc(tone)}"><i></i><b>${esc(score)}</b></span>`;
+}
+
+function fakeChip(state, menu) {
+  if (!menu.fake || lessonAt(state)) return '';
+  const on = state.draft.fake ? ' is-on' : '';
+  return `<button type="button" id="fake" class="chip${on}" aria-pressed="${state.draft.fake}">Фейк</button>`;
 }
 
 function playRemote(state) {
   const lesson = lessonAt(state);
   const target = coachTarget(lesson, state.draft);
-  const tiles = CONFIG.plays.attack.map((play) => {
+  const menu = menuOf(state);
+  const tiles = menu.plays.map((play) => {
     const on = state.draft.play === play.id ? ' is-on' : '';
     const blocked = lesson && !lesson.allow.plays.includes(play.id);
     const coach = target === `play:${play.id}` ? ' coach' : '';
     return `
       <button type="button" class="play-button${on}${coach}" data-play="${esc(play.id)}" aria-pressed="${state.draft.play === play.id}" aria-label="${esc(play.label)}"${blocked ? ' disabled' : ''}>
-        ${miniMarkup(play.id, state)}
-        <span>${esc(play.label)}</span>
+        ${miniMarkup(play.orders, state)}
+        <span class="play-name">${esc(play.label)}</span>
+        ${verdictMarkup(play.forecast)}
       </button>
     `;
   }).join('');
-  const fake = state.draft.fake;
-  const fakeTile = lesson ? '' : `
-      <button type="button" id="fake" class="play-button fake-toggle${fake ? ' is-on' : ''}" aria-pressed="${fake}">
-        ${fakeMini(state)}
-        <span>Фейк</span>
-      </button>`;
   const ready = !lesson || commitReady(lesson, state.draft);
   const commitCoach = target === 'commit' ? ' coach' : '';
+  const fake = fakeChip(state, menu);
+  const grenades = grenadeRow(state);
+  const chips = fake || grenades ? `<div class="chips">${fake}${grenades}</div>` : '';
   return `
+    <p class="chosen">${esc(planCaption(state))}</p>
     <div class="play-grid">
       ${tiles}
-      ${fakeTile}
     </div>
-    ${grenadeRow(state)}
-    <p class="chosen">${esc(planCaption(state))}</p>
+    ${chips}
     <button type="button" id="commit" class="${commitCoach.trim()}"${ready ? '' : ' disabled'}>${state.draft.play ? 'Сделать ход' : 'Стоять'}</button>
   `;
 }
@@ -569,6 +575,7 @@ function seenFight(state, fight) {
 }
 
 function feed(state) {
+  if (stageOf(state) < 2) return '';
   const step = stepOf(state);
   if (!step) return '';
   const lines = [];
@@ -626,12 +633,21 @@ function panel(state) {
     if (state.tutorial) return lessonBeat(state);
     const step = state.log.at(-1);
     const over = Boolean(state.roundState.winner);
+    const stage = stageOf(state);
+    const hint = stage < 1
+      ? 'Идут на\u00A0клетки.'
+      : stage < 2
+        ? 'Бой в\u00A0клетках, куда сошлись.'
+        : (over ? endText(state.roundState) : 'Чужих видно у\u00A0себя и\u00A0в\u00A0соседних клетках.');
+    const button = stage < 2
+      ? 'Показать итог'
+      : (over ? 'Как было на\u00A0самом деле' : `Ход ${step.move + 1}`);
     return `
       <section class="panel">
         <h2>Ход ${step.move}</h2>
-        <p class="hint">${esc(over ? endText(state.roundState) : 'Чужих видно у\u00A0себя и\u00A0в\u00A0соседних клетках.')}</p>
+        <p class="hint">${esc(hint)}</p>
         ${feed(state)}
-        <button type="button" id="continue">${over ? 'Как было на\u00A0самом деле' : `Ход ${step.move + 1}`}</button>
+        <button type="button" id="continue">${button}</button>
       </section>
     `;
   }
@@ -687,8 +703,8 @@ function scoreboard(state) {
 
 function paintAim(state, playId) {
   const layer = document.querySelector('.aim-arrows');
-  document.querySelectorAll('.cell.aim').forEach((node) => node.classList.remove('aim'));
-  document.querySelectorAll('.aim-badge').forEach((node) => node.remove());
+  document.querySelectorAll('.cell.aim').forEach((node) => node.classList.remove('aim', 'aim-win', 'aim-loss', 'aim-tie', 'aim-unknown', 'aim-clear'));
+  document.querySelectorAll('.aim-badge, .aim-outcome').forEach((node) => node.remove());
   if (!layer) return;
   layer.replaceChildren();
   if (state.phase !== 'move' || !state.roundState) return;
@@ -728,6 +744,17 @@ function paintAim(state, playId) {
       : '';
     badge.innerHTML = `<b>${count}</b>${bomb}`;
     cell.append(badge);
+  }
+  const forecast = playEntry(state, playId)?.forecast;
+  if (forecast?.cell) {
+    const cell = document.querySelector(`.cell[data-zone="${forecast.cell}"]`);
+    if (cell) {
+      cell.classList.add('aim', `aim-${forecast.tone}`);
+      const mark = document.createElement('p');
+      mark.className = `aim-outcome ${forecast.tone}`;
+      mark.title = forecast.sentence || '';
+      cell.append(mark);
+    }
   }
 }
 
@@ -781,12 +808,17 @@ export function render(state, actions) {
   app.querySelectorAll('[data-buy]').forEach((button) => {
     button.addEventListener('click', () => actions.onPickBuy(button.dataset.buy));
   });
+  const showPlay = (playId) => {
+    paintAim(state, playId);
+    const caption = app.querySelector('.chosen');
+    if (caption) caption.textContent = planCaption(state, playId);
+  };
   app.querySelectorAll('[data-play]').forEach((button) => {
     button.addEventListener('click', () => actions.onPickPlay(button.dataset.play));
-    button.addEventListener('mouseenter', () => paintAim(state, button.dataset.play));
-    button.addEventListener('focus', () => paintAim(state, button.dataset.play));
-    button.addEventListener('mouseleave', () => paintAim(state, state.draft.play));
-    button.addEventListener('blur', () => paintAim(state, state.draft.play));
+    button.addEventListener('mouseenter', () => showPlay(button.dataset.play));
+    button.addEventListener('focus', () => showPlay(button.dataset.play));
+    button.addEventListener('mouseleave', () => showPlay(state.draft.play));
+    button.addEventListener('blur', () => showPlay(state.draft.play));
   });
   app.querySelectorAll('[data-grenade]').forEach((button) => {
     button.addEventListener('click', () => actions.onPickGrenade(button.dataset.grenade));
@@ -796,7 +828,13 @@ export function render(state, actions) {
   app.querySelector('#lesson-next')?.addEventListener('click', () => actions.onLessonNext());
   app.querySelector('#skip-tutorial')?.addEventListener('click', () => actions.onSkipTutorial());
   app.querySelector('#teach')?.addEventListener('click', () => actions.onTeach());
-  app.querySelector('#continue')?.addEventListener('click', () => actions.onContinue());
+  app.querySelector('#continue')?.addEventListener('click', () => {
+    if (stageOf(state) < 2) actions.onSkipReveal();
+    else actions.onContinue();
+  });
+  if (stageOf(state) < 2) {
+    app.querySelector('.map-frame')?.addEventListener('click', () => actions.onSkipReveal());
+  }
   app.querySelector('#replay-back')?.addEventListener('click', () => actions.onReplay(state.replayIndex - 1, false));
   app.querySelector('#replay-forward')?.addEventListener('click', () => actions.onReplay(state.replayIndex + 1, false));
   app.querySelector('#replay-start')?.addEventListener('click', () => actions.onReplay(0, false));
@@ -805,7 +843,10 @@ export function render(state, actions) {
   paintAim(state, state.draft.play);
   animatePieces();
 
-  if (state.phase === 'review' && state.playing && state.replayIndex < state.log.length - 1) {
+  if ((state.phase === 'reveal' || state.phase === 'review') && stageOf(state) < 2) {
+    const wait = stageOf(state) === 0 ? CONFIG.ui.moveAnimMs : CONFIG.ui.fightRevealMs;
+    timers.push(setTimeout(() => actions.onRevealTick(), wait));
+  } else if (state.phase === 'review' && state.playing && state.replayIndex < state.log.length - 1) {
     timers.push(setTimeout(() => actions.onReplay(state.replayIndex + 1, true), CONFIG.ui.playbackStepMs));
   }
 

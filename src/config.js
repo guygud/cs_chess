@@ -105,8 +105,9 @@ export const CONFIG = {
   ui: {
     playbackStepMs: 1100,
     buySeconds: 20,
-    moveSeconds: 15,
-    moveAnimMs: 250,
+    moveSeconds: 20,
+    moveAnimMs: 700,
+    fightRevealMs: 900,
   },
 
   rosters: {

@@ -1,6 +1,6 @@
 import { CONFIG } from './config.js';
 import { createRound } from './engine.js';
-import { commitOrders } from './plays.js';
+import { contextPlays, withGrenade } from './plays.js';
 
 const ATTACK = CONFIG.rosters.attack;
 const DEFENSE = CONFIG.rosters.defense;
@@ -21,7 +21,8 @@ export const LESSONS = [
   {
     id: 'move',
     title: 'Мув',
-    task: 'Выберите «Раш +\u00A0А» и\u00A0сделайте ход.',
+    task: 'Выберите «{play}» и\u00A0сделайте ход.',
+    taskPlay: 'rush:PLANTA',
     outcome: 'Все пятеро дошли до\u00A0выхода на\u00A0лонг. Стрелки на\u00A0карте показывали это заранее.',
     weapon: 'smg',
     defenseWeapon: 'pistol',
@@ -29,8 +30,8 @@ export const LESSONS = [
       attack: spots('attack', ['TSPAWN', 'TSPAWN', 'TSPAWN', 'TSPAWN', 'TSPAWN']),
       defense: spots('defense', ['CTSPAWN', 'CTSPAWN', 'CTSPAWN', 'CTSPAWN', 'CTSPAWN']),
     },
-    play: 'rush-a',
-    allow: { buys: [], plays: ['rush-a'], grenades: [], stay: false },
+    play: 'rush:PLANTA',
+    allow: { buys: [], plays: ['rush:PLANTA'], grenades: [], stay: false },
     expect: { cell: 'OUTLONG', attackThere: 5, contact: false },
   },
   {
@@ -52,7 +53,8 @@ export const LESSONS = [
   {
     id: 'slots',
     title: 'Места',
-    task: 'Выберите «Раш +\u00A0А» и\u00A0зайдите всей толпой.',
+    task: 'Выберите «{play}» и\u00A0зайдите всей толпой.',
+    taskPlay: 'rush:PLANTA',
     outcome: 'Пятеро дали столько\u00A0же, сколько трое.',
     weapon: 'smg',
     defenseWeapon: 'rifle',
@@ -60,8 +62,8 @@ export const LESSONS = [
       attack: spots('attack', ['TSPAWN', 'TSPAWN', 'TSPAWN', 'TSPAWN', 'TSPAWN']),
       defense: spots('defense', ['OUTLONG', 'OUTLONG', 'CTSPAWN', 'CTSPAWN', 'CTSPAWN']),
     },
-    play: 'rush-a',
-    allow: { buys: [], plays: ['rush-a'], grenades: [], stay: false },
+    play: 'rush:PLANTA',
+    allow: { buys: [], plays: ['rush:PLANTA'], grenades: [], stay: false },
     expect: {
       cell: 'OUTLONG',
       outcome: 'defense',
@@ -78,14 +80,14 @@ export const LESSONS = [
     weapon: 'smg',
     defenseWeapon: 'rifle',
     stock: ['smoke'],
-    presetPlay: 'rush-a',
+    presetPlay: 'rush:PLANTA',
     spots: {
       attack: spots('attack', ['TSPAWN', 'TSPAWN', 'TSPAWN', 'TSPAWN', 'TSPAWN']),
       defense: spots('defense', ['OUTLONG', 'OUTLONG', 'CTSPAWN', 'CTSPAWN', 'CTSPAWN']),
     },
-    play: 'rush-a',
+    play: 'rush:PLANTA',
     grenade: 'smoke',
-    allow: { buys: [], plays: ['rush-a'], grenades: ['smoke'], stay: false },
+    allow: { buys: [], plays: ['rush:PLANTA'], grenades: ['smoke'], stay: false },
     expect: { cell: 'OUTLONG', outcome: 'attack', smoke: 'OUTLONG' },
   },
 ];
@@ -118,7 +120,9 @@ export function lessonRound(lesson, config = CONFIG) {
 
 export function lessonAttackOrders(lesson, round, config = CONFIG) {
   if (!lesson.play) return { moves: [], throws: [], label: 'Стоят', fake: [] };
-  return commitOrders(lesson.play, 'attack', round, config, { grenade: lesson.grenade || null });
+  const play = contextPlays(round, config).plays.find((item) => item.id === lesson.play);
+  if (!play) throw new Error(`Урок не нашёл мув ${lesson.play}`);
+  return withGrenade(play.orders, 'attack', round, config, lesson.grenade || null);
 }
 
 export function lessonDefenseOrders(lesson, round) {

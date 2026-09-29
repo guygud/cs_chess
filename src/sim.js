@@ -1,7 +1,7 @@
 import { CONFIG } from './config.js';
 import { applyRoundEconomy, bestBuy, buyCost, canStep, matchStatus, movesLimit, playRound, resolveMove, createRound, neighbors, weaponStrength, visibleCells, remember } from './engine.js';
 import { defenseOrders, planRound } from './bot.js';
-import { assertPlays, commitOrders, ordersFromPlay } from './plays.js';
+import { assertPlays, commitOrders, contextPlays, ordersFromPlay } from './plays.js';
 import { LESSONS, lessonAttackOrders, lessonDefenseOrders, lessonRound } from './tutorial.js';
 
 function expect(condition, message) {
@@ -515,6 +515,30 @@ function selfCheck() {
       );
     }
   }
+
+  const opening = contextPlays(createRound(pack('attack'), pack('defense')));
+  expect(opening.fake, 'На старте фейк доступен');
+  expect(!opening.plays.some((play) => play.label.includes('Отойти')), 'На старте нет отхода');
+  expect(opening.plays.length <= 6, 'Мувов не больше шести');
+  const openingKeys = opening.plays.map((play) => play.orders.moves.map((move) => `${move.name}:${move.to}`).sort().join('|'));
+  expect(new Set(openingKeys).size === openingKeys.length, 'Одинаковых приказов нет');
+
+  const shifted = createRound(pack('attack'), pack('defense'));
+  place(shifted, Object.fromEntries(names.map((name) => [name, 'OUTLONG'])));
+  shifted.move = 1;
+  const fromLong = contextPlays(shifted);
+  expect(!fromLong.fake, 'После первого хода фейк недоступен');
+  expect(fromLong.plays.some((play) => play.label.startsWith('Зайти') && play.label.includes('лонг')), 'С выхода есть зайти на лонг');
+  expect(fromLong.plays.some((play) => play.label.startsWith('Держать')), 'С выхода есть держать');
+  expect(fromLong.plays.some((play) => play.label.includes('Отойти')), 'С выхода есть отойти на спавн');
+  const longKeys = fromLong.plays.map((play) => play.orders.moves.map((move) => `${move.name}:${move.to}`).sort().join('|'));
+  expect(new Set(longKeys).size === longKeys.length && fromLong.plays.length <= 6, 'С выхода список без повторов и не длиннее шести');
+
+  const slotsLesson = LESSONS.find((lesson) => lesson.id === 'slots');
+  const slotsRound = lessonRound(slotsLesson);
+  const slotsPlay = contextPlays(slotsRound).plays.find((play) => play.id === slotsLesson.play);
+  expect(slotsPlay?.forecast.tone === 'loss', 'Прогноз урока про места — проигрыш');
+  expect(slotsPlay?.forecast.attack === 5 && slotsPlay?.forecast.defense === 6, 'Прогноз 5 против 6');
 }
 
 function playAgainstDefense(attack, defense, attackPlays, config = CONFIG) {

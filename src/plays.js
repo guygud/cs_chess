@@ -5,7 +5,9 @@ import {
   createRound,
   neighbors,
   resolveMove,
+  shadowMarks,
   sidePower,
+  visibleCells,
   weaponStrength,
 } from './engine.js';
 
@@ -460,6 +462,331 @@ export function chooseDefensePlay(state, config = CONFIG) {
   const lastMove = state.move >= config.rules.movesPerRound - 1;
   if (lastMove && defense.length > attack.length && attack.length) return playById('defense', 'save', config);
   return playById('defense', 'split', config);
+}
+
+const PREP = {
+  UPTUNNEL: 'в',
+  TSPAWN: 'на',
+  OUTLONG: 'на',
+  PLANTB: 'на',
+  LOWTUNNEL: 'в',
+  MID: 'в',
+  LONG: 'на',
+  BDOORS: 'в',
+  SHORT: 'на',
+  PLANTA: 'на',
+  CTSPAWN: 'на',
+};
+
+function lowerLabel(cellId, config) {
+  const label = config.map.cells[cellId]?.label || cellId;
+  return label.charAt(0).toLowerCase() + label.slice(1);
+}
+
+function into(cellId, config) {
+  return `${PREP[cellId] || 'в'}\u00A0${lowerLabel(cellId, config)}`;
+}
+
+function plantsOf(config) {
+  return config.cellOrder.filter((cellId) => config.map.cells[cellId].plant);
+}
+
+function roadsFrom(cell, plant, config) {
+  const dist = cellDistance(cell, plant, config);
+  const roads = neighbors(cell, config).filter((next) => cellDistance(next, plant, config) + 1 === dist);
+  const preferred = config.preferredGate?.[plant];
+  const lane = config.preferredLane?.[plant];
+  roads.sort((left, right) => {
+    const rank = (cellId) => (cellId === preferred || cellId === lane ? 0 : 1);
+    return rank(left) - rank(right) || left.localeCompare(right, 'en');
+  });
+  return roads;
+}
+
+function orderKey(moves) {
+  return moves.map((move) => `${move.name}>${move.to}`).sort().join('|');
+}
+
+function movesFromDest(fighters, dest) {
+  return fighters.map((fighter) => ({ name: fighter.name, to: dest[fighter.name] }));
+}
+
+function contextSplitDest(fighters, plant, config) {
+  const groups = new Map();
+  for (const fighter of fighters) {
+    if (!groups.has(fighter.point)) groups.set(fighter.point, []);
+    groups.get(fighter.point).push(fighter);
+  }
+  let bestCell = null;
+  let bestSize = 0;
+  for (const [cell, group] of groups) {
+    if (group.length >= 2 && roadsFrom(cell, plant, config).length >= 2 && group.length > bestSize) {
+      bestCell = cell;
+      bestSize = group.length;
+    }
+  }
+  if (!bestCell) return null;
+  const roadsHere = roadsFrom(bestCell, plant, config);
+  const group = groups.get(bestCell);
+  const offCount = Math.max(1, Math.floor((group.length * 2) / 5));
+  const mainCount = group.length - offCount;
+  const dest = {};
+  group.forEach((fighter, index) => {
+    dest[fighter.name] = index < mainCount ? roadsHere[0] : roadsHere[1];
+  });
+  for (const fighter of fighters) {
+    if (dest[fighter.name]) continue;
+    dest[fighter.name] = stepToward(fighter.point, plant, config);
+  }
+  return dest;
+}
+
+function peopleWord(count) {
+  if (count === 1) return 'один';
+  if (count === 2) return 'двое';
+  if (count === 3) return 'трое';
+  if (count === 4) return 'четверо';
+  if (count === 5) return 'пятеро';
+  return String(count);
+}
+
+function powerNum(value) {
+  const rounded = Math.round(value * 10) / 10;
+  return String(rounded).replace('.', ',');
+}
+
+function powerParts(group, cellId, side, owned, smoke, stayed, config) {
+  const parts = group.map((fighter) => Math.max(0, (
+    weaponStrength(fighter.weapon, config)
+    * ((stayed(fighter) && owned[cellId] === side) ? config.rules.holdMultiplier : 1)
+    - smoke
+  )));
+  parts.sort((left, right) => right - left);
+  const full = config.rules.stackFull;
+  const extra = config.rules.stackExtra;
+  const shooters = config.rules.stackShooters ?? parts.length;
+  return parts.slice(0, shooters).map((value, index) => (index < full ? value : value * extra));
+}
+
+function describeMove(id, action, zone, moves, fighters, config) {
+  const spawn = config.spawns.attack;
+  const at = Object.fromEntries(fighters.map((fighter) => [fighter.name, fighter.point]));
+  const allOnSpawn = fighters.every((fighter) => fighter.point === spawn);
+  const destinations = new Map();
+  for (const move of moves) destinations.set(move.to, (destinations.get(move.to) || 0) + 1);
+  const groups = [...destinations.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0], 'en'));
+  const stayed = moves.every((move) => move.to === at[move.name]);
+  if (action === 'hold' || stayed) {
+    if (groups.length === 1) return `Держать ${lowerLabel(groups[0][0], config)}`;
+    return 'Держать';
+  }
+  if (action === 'fallback') return 'Отойти на\u00A0спавн';
+  if (action === 'split' && zone) {
+    const letter = zone === 'PLANTB' ? 'Б' : 'А';
+    const bits = groups.map(([cellId, count]) => `${count}\u00A0${into(cellId, config)}`);
+    return `Сплит на\u00A0${letter}: ${bits.join(', ')}`;
+  }
+  if (groups.length === 1) {
+    const cellId = groups[0][0];
+    if (allOnSpawn) return `Все ${into(cellId, config)}`;
+    if (action === 'regroup') return `Собраться ${into(cellId, config)}`;
+    return `Зайти ${into(cellId, config)}`;
+  }
+  if (action === 'regroup') {
+    const goal = zone === 'spawn' ? spawn : zone;
+    return `Собраться ${into(goal, config)}`;
+  }
+  return groups.map(([cellId, count]) => `${count}\u00A0${into(cellId, config)}`).join(', ');
+}
+
+export function contextPlays(state, config = CONFIG, options = {}) {
+  const fighters = living(state, 'attack');
+  const spawn = config.spawns.attack;
+  const plants = plantsOf(config).sort((left, right) => {
+    if (left === config.plantTie) return -1;
+    if (right === config.plantTie) return 1;
+    return 0;
+  });
+  const fakeAllowed = state.move === 0 && fighters.length > 0 && fighters.every((fighter) => fighter.point === spawn);
+  const points = new Set(fighters.map((fighter) => fighter.point));
+  const candidates = [];
+
+  const push = (id, action, zone, dest) => {
+    if (!dest) return;
+    for (const fighter of fighters) {
+      if (!canStep(fighter.point, dest[fighter.name], config)) return;
+    }
+    const moves = movesFromDest(fighters, dest);
+    candidates.push({ id, action, zone, moves, dest });
+  };
+
+  for (const plant of plants) {
+    push(`rush:${plant}`, 'rush', plant, rushDest(fighters, plant, config));
+    push(`split:${plant}`, 'split', plant, contextSplitDest(fighters, plant, config));
+  }
+  if (points.size > 1) {
+    const tally = new Map();
+    for (const fighter of fighters) tally.set(fighter.point, (tally.get(fighter.point) || 0) + 1);
+    const [gather] = [...tally.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0], 'en'))[0];
+    push(`regroup:${gather}`, 'regroup', gather, regroupDest(fighters, gather, 'attack', config));
+    if (gather !== spawn) {
+      push('regroup:spawn', 'regroup', 'spawn', regroupDest(fighters, 'spawn', 'attack', config));
+    }
+  } else if (!points.has(config.map.cells.MID ? 'MID' : spawn)) {
+    push('regroup:MID', 'regroup', 'MID', regroupDest(fighters, 'MID', 'attack', config));
+  }
+  push('hold', 'hold', null, Object.fromEntries(fighters.map((fighter) => [fighter.name, fighter.point])));
+  push('fallback', 'fallback', 'spawn', regroupDest(fighters, 'spawn', 'attack', config));
+
+  const at = Object.fromEntries(fighters.map((fighter) => [fighter.name, fighter.point]));
+  const seen = new Map();
+  const unique = [];
+  for (const candidate of candidates) {
+    const stayed = candidate.moves.every((move) => move.to === at[move.name]);
+    if (stayed && candidate.action !== 'hold') continue;
+    const key = orderKey(candidate.moves);
+    const preferred = candidate.action === 'hold' || candidate.action === 'fallback';
+    if (seen.has(key) && !preferred) continue;
+    const label = describeMove(candidate.id, candidate.action, candidate.zone, candidate.moves, fighters, config);
+    const play = { id: candidate.id, action: candidate.action, zone: candidate.zone, label };
+    const dest = { ...candidate.dest };
+    const fakeNames = options.fake && fakeAllowed && candidate.action === 'rush'
+      ? applyFake(dest, fighters, play, config)
+      : [];
+    const moves = fakeNames.length ? movesFromDest(fighters, dest) : candidate.moves;
+    const orders = {
+      moves,
+      throws: [],
+      play,
+      fake: fakeNames,
+      label: fakeNames.length ? `${label} +\u00A0фейк` : label,
+    };
+    const closer = candidate.action === 'hold'
+      ? 0
+      : fighters.filter((fighter) => {
+        const next = orders.moves.find((move) => move.name === fighter.name)?.to;
+        const before = Math.min(...plants.map((plant) => cellDistance(fighter.point, plant, config)));
+        const after = Math.min(...plants.map((plant) => cellDistance(next, plant, config)));
+        return after < before;
+      }).length;
+    const rank = candidate.action === 'hold' ? 1 : candidate.action === 'fallback' ? 2 : (closer > 0 ? 0 : 2);
+    const item = {
+      id: candidate.id,
+      label: orders.label,
+      orders,
+      forecast: forecastFor(orders, state, config, options),
+      rank,
+    };
+    if (seen.has(key)) unique[seen.get(key)] = item;
+    else {
+      seen.set(key, unique.length);
+      unique.push(item);
+    }
+  }
+  const forward = unique.filter((item) => item.rank === 0);
+  const tail = unique.filter((item) => item.rank !== 0);
+  const plays = [...forward.slice(0, Math.max(0, 6 - tail.length)), ...tail].slice(0, 6);
+  return { plays, fake: fakeAllowed };
+}
+
+export function forecastFor(orders, state, config = CONFIG, options = {}) {
+  const unknown = {
+    tone: 'unknown',
+    attack: null,
+    defense: null,
+    score: null,
+    sentence: 'Врагов не\u00A0видно',
+    cell: null,
+  };
+  if (!orders?.moves?.length || !state) return unknown;
+  const withThrow = options.grenade ? withGrenade(orders, 'attack', state, config, options.grenade) : orders;
+  const thrown = withThrow.throws?.find((item) => item.type === 'smoke' || item.type === 'flash') || null;
+  const vision = visibleCells(state.fighters, 'attack', config);
+  const at = Object.fromEntries(state.fighters.map((fighter) => [fighter.name, fighter]));
+  const fake = new Set(withThrow.fake || []);
+  const byCell = new Map();
+  for (const move of withThrow.moves) {
+    if (fake.has(move.name)) continue;
+    if (!byCell.has(move.to)) byCell.set(move.to, []);
+    byCell.get(move.to).push(at[move.name]);
+  }
+  const marks = shadowMarks(state.fighters, options.memory || {}, 'attack', state.move, config);
+  let best = null;
+  let unseen = false;
+  let remembered = null;
+  for (const [cellId, group] of byCell) {
+    const enemies = state.fighters.filter((fighter) => (
+      fighter.alive && fighter.side === 'defense' && fighter.point === cellId && vision.has(cellId)
+    ));
+    if (!vision.has(cellId)) {
+      unseen = true;
+      const here = marks.filter((mark) => mark.point === cellId);
+      if (here.length && (!remembered || here.length > remembered.count)) {
+        remembered = { cellId, count: here.length };
+      }
+      continue;
+    }
+    if (!enemies.length) continue;
+    const smoke = thrown?.type === 'smoke' && thrown.point === cellId ? config.utility.smoke.penalty : 0;
+    const oursStay = (fighter) => withThrow.moves.find((move) => move.name === fighter.name)?.to === at[fighter.name]?.point;
+    const attackParts = powerParts(group.filter(Boolean), cellId, 'attack', state.owned, 0, oursStay, config);
+    const defenseParts = powerParts(enemies, cellId, 'defense', state.owned, smoke, () => true, config);
+    const attack = sidePower(group.filter(Boolean), cellId, 'attack', state.owned, 0, oursStay, config);
+    const defense = sidePower(enemies, cellId, 'defense', state.owned, smoke, () => true, config);
+    const flash = thrown?.type === 'flash' && thrown.point === cellId;
+    let diff = compare(attack, defense, config);
+    if (diff === 0 && flash) diff = 1;
+    const item = {
+      cellId,
+      group: group.length,
+      enemies: enemies.length,
+      attack,
+      defense,
+      attackParts,
+      defenseParts,
+      diff,
+      flash,
+      smoke,
+    };
+    if (!best || item.group > best.group) best = item;
+  }
+  const mainCell = [...byCell.entries()].sort((left, right) => right[1].length - left[1].length)[0]?.[0] || null;
+  if (!best) {
+    if (remembered) {
+      const verb = remembered.count === 1 ? 'был' : 'были';
+      return {
+        tone: 'unknown',
+        attack: null,
+        defense: null,
+        score: null,
+        sentence: `${config.map.cells[remembered.cellId].label}: там ${verb} ${peopleWord(remembered.count)} ходом раньше`,
+        cell: remembered.cellId,
+      };
+    }
+    if (!unseen) {
+      return { tone: 'clear', attack: null, defense: null, score: null, sentence: 'Там пусто', cell: mainCell };
+    }
+    return { ...unknown, cell: mainCell };
+  }
+  const tone = best.diff > 0 ? 'win' : best.diff < 0 ? 'loss' : 'tie';
+  const verdict = tone === 'win' ? 'победа' : tone === 'loss' ? 'проигрыш' : 'ничья';
+  const extra = [];
+  if (best.smoke) extra.push('дымовая снимает\u00A02');
+  if (best.flash && best.diff > 0 && compare(best.attack, best.defense, config) === 0) extra.push('световая решает равный бой');
+  const stand = best.enemies === 1 ? 'стоит' : 'стоят';
+  const sentence = [
+    `${config.map.cells[best.cellId].label}: там ${peopleWord(best.enemies)} ${stand}`,
+    `${best.attackParts.map(powerNum).join(' + ')} против ${best.defenseParts.map(powerNum).join(' + ')}\u00A0\u2014 ${verdict}`,
+    ...extra,
+  ].join(', ');
+  return {
+    tone,
+    attack: best.attack,
+    defense: best.defense,
+    score: `${powerNum(best.attack)}\u00A0:\u00A0${powerNum(best.defense)}`,
+    sentence,
+    cell: best.cellId,
+  };
 }
 
 export function assertPlays(config = CONFIG) {

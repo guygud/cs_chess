@@ -9,8 +9,8 @@ import {
   resolveMove,
 } from './engine.js';
 import { defenseOrders, planRound } from './bot.js';
-import { assertPlays, commitOrders, otherPlant } from './plays.js';
-import { clearTimers, render } from './ui.js?v=17';
+import { assertPlays, contextPlays, otherPlant, withGrenade } from './plays.js';
+import { clearTimers, render } from './ui.js?v=21';
 import {
   LESSONS,
   TUTORIAL_KEY,
@@ -18,7 +18,7 @@ import {
   lessonAt,
   lessonDefenseOrders,
   lessonRound,
-} from './tutorial.js?v=2';
+} from './tutorial.js?v=3';
 
 function assertConfig() {
   if (CONFIG.rosters.attack.length !== CONFIG.rules.attackFighters) {
@@ -202,11 +202,15 @@ const actions = {
     const lesson = lessonAt(state);
     if (lesson && !commitReady(lesson, state.draft)) return;
     try {
-      const attackOrders = state.draft.play
-        ? commitOrders(state.draft.play, 'attack', state.roundState, CONFIG, {
+      const chosen = state.draft.play
+        ? contextPlays(state.roundState, CONFIG, {
           fake: state.draft.fake,
           grenade: state.draft.grenade,
-        })
+          memory: state.memory,
+        }).plays.find((item) => item.id === state.draft.play)
+        : null;
+      const attackOrders = chosen
+        ? withGrenade(chosen.orders, 'attack', state.roundState, CONFIG, state.draft.grenade)
         : { moves: [], throws: [], label: 'Стоят', fake: [] };
       const defense = lesson
         ? lessonDefenseOrders(lesson, state.roundState)
@@ -223,6 +227,7 @@ const actions = {
       state.roundState = step.state;
       state.draft.grenade = null;
       state.phase = 'reveal';
+      state.revealStage = state.tutorial ? 2 : 0;
       state.error = null;
       clearClock();
       if (state.tutorial) {
@@ -237,22 +242,42 @@ const actions = {
       render(state, actions);
     }
   },
+  onRevealTick() {
+    if (state.phase !== 'reveal' && state.phase !== 'review') return;
+    if ((state.revealStage ?? 0) >= 2) return;
+    state.revealStage = (state.revealStage ?? 0) + 1;
+    render(state, actions);
+  },
+  onSkipReveal() {
+    if (state.phase !== 'reveal' && state.phase !== 'review') return;
+    if ((state.revealStage ?? 0) >= 2) return;
+    state.revealStage = 2;
+    render(state, actions);
+  },
   onContinue() {
     if (state.roundState.winner) {
       state.phase = 'review';
       state.replayIndex = 0;
+      state.revealStage = 0;
       state.playing = true;
       clearClock();
       render(state, actions);
       return;
     }
     state.phase = 'move';
+    state.revealStage = 2;
+    const menu = contextPlays(state.roundState, CONFIG, { memory: state.memory });
+    if (!menu.fake) state.draft.fake = false;
+    if (state.draft.play && !menu.plays.some((item) => item.id === state.draft.play)) {
+      state.draft.play = null;
+    }
     armClock(CONFIG.ui.moveSeconds);
     render(state, actions);
   },
   onReplay(index, playing) {
     const last = state.log.length - 1;
     state.replayIndex = Math.max(0, Math.min(last, index));
+    state.revealStage = 0;
     state.playing = Boolean(playing) && state.replayIndex < last;
     render(state, actions);
   },
