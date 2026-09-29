@@ -10,15 +10,8 @@ import {
 } from './engine.js';
 import { defenseOrders, planRound } from './bot.js';
 import { assertPlays, contextPlays, otherPlant, withGrenade } from './plays.js';
-import { clearTimers, render } from './ui.js?v=21';
-import {
-  LESSONS,
-  TUTORIAL_KEY,
-  commitReady,
-  lessonAt,
-  lessonDefenseOrders,
-  lessonRound,
-} from './tutorial.js?v=3';
+import { clearTimers, render } from './ui.js?v=22';
+import { nextTip } from './tips.js';
 
 function assertConfig() {
   if (CONFIG.rosters.attack.length !== CONFIG.rules.attackFighters) {
@@ -37,18 +30,61 @@ function freshDraft() {
   return { buyId: null, play: null, fake: false, grenade: null };
 }
 
-function tutorialPending() {
+const TIPS_KEY = 'dust2.tipsSeen';
+let sessionTips = null;
+
+function loadSeenTips() {
+  if (sessionTips) return sessionTips.slice();
   try {
-    return localStorage.getItem(TUTORIAL_KEY) !== '1';
+    const raw = localStorage.getItem(TIPS_KEY) || '';
+    sessionTips = raw.split(',').map((item) => item.trim()).filter(Boolean);
   } catch (error) {
-    return false;
+    sessionTips = [];
   }
+  return sessionTips.slice();
+}
+
+function rememberTip(id) {
+  if (!id) return;
+  const seen = loadSeenTips();
+  if (seen.includes(id)) return;
+  sessionTips = seen.concat(id);
+  try {
+    localStorage.setItem(TIPS_KEY, sessionTips.join(','));
+  } catch (error) {
+    // Подсказки остаются в памяти вкладки.
+  }
+}
+
+function tipView() {
+  const menu = state.phase === 'move' && state.roundState
+    ? contextPlays(state.roundState, CONFIG, {
+      fake: state.draft.fake,
+      grenade: state.draft.grenade,
+      memory: state.memory,
+    })
+    : null;
+  return {
+    phase: state.phase,
+    round: state.round,
+    roundState: state.roundState,
+    draft: state.draft,
+    menu,
+    wallet: state.wallets.attack,
+  };
+}
+
+function markShownTips() {
+  for (const id of state.tipTrail || []) rememberTip(id);
+  state.tipTrail = [];
+  state.tips = loadSeenTips();
 }
 
 function freshState() {
   return {
     phase: 'buy',
-    tutorial: tutorialPending() ? { index: 0, beat: false } : null,
+    tips: loadSeenTips(),
+    tipTrail: [],
     round: 1,
     score: { attack: 0, defense: 0 },
     wallets: {
@@ -100,19 +136,7 @@ function beginRound() {
   state.phase = 'buy';
   state.replayIndex = 0;
   state.playing = false;
-  if (state.tutorial) {
-    state.tutorial.beat = false;
-    const lesson = lessonAt(state);
-    if (lesson.wallet != null) state.wallets.attack = lesson.wallet;
-    if (lesson.spots) {
-      state.roundState = lessonRound(lesson);
-      state.draft.play = lesson.presetPlay || null;
-      state.phase = 'move';
-    }
-    clearClock();
-    render(state, actions);
-    return;
-  }
+  state.tipTrail = [];
   armClock(CONFIG.ui.buySeconds);
   render(state, actions);
 }
@@ -131,8 +155,6 @@ function settle() {
 const actions = {
   onPickBuy(buyId) {
     if (state.phase !== 'buy') return;
-    const lesson = lessonAt(state);
-    if (lesson && !lesson.allow.buys.includes(buyId)) return;
     const buy = CONFIG.buys.find((item) => item.id === buyId);
     if (!buy || buy.cost > state.wallets.attack) return;
     try {
@@ -153,12 +175,7 @@ const actions = {
       state.draft.play = null;
       state.phase = 'move';
       state.error = null;
-      if (state.tutorial) {
-        state.tutorial.beat = true;
-        clearClock();
-        render(state, actions);
-        return;
-      }
+      markShownTips();
       armClock(CONFIG.ui.moveSeconds);
       render(state, actions);
     } catch (error) {
@@ -167,28 +184,23 @@ const actions = {
     }
   },
   onPickPlay(playId) {
-    if (state.phase !== 'move' || state.tutorial?.beat) return;
-    const lesson = lessonAt(state);
-    if (lesson && !lesson.allow.plays.includes(playId)) return;
+    if (state.phase !== 'move') return;
     state.draft.play = state.draft.play === playId ? null : playId;
     state.error = null;
     render(state, actions);
   },
   onToggleFake() {
-    if (state.phase !== 'move' || state.tutorial) return;
+    if (state.phase !== 'move') return;
     state.draft.fake = !state.draft.fake;
     render(state, actions);
   },
   onPickGrenade(type) {
-    if (state.phase !== 'move' || state.tutorial?.beat) return;
-    const lesson = lessonAt(state);
-    if (lesson && !lesson.allow.grenades.includes(type)) return;
+    if (state.phase !== 'move') return;
     if (!state.roundState.stock.attack.includes(type)) return;
     state.draft.grenade = state.draft.grenade === type ? null : type;
     render(state, actions);
   },
   onTimeout() {
-    if (state.tutorial) return;
     if (state.phase !== 'buy' && state.phase !== 'move') return;
     state.deadline = null;
     if (state.phase === 'buy') {
@@ -198,9 +210,7 @@ const actions = {
     actions.onCommitMove();
   },
   onCommitMove() {
-    if (state.phase !== 'move' || !state.roundState || state.tutorial?.beat) return;
-    const lesson = lessonAt(state);
-    if (lesson && !commitReady(lesson, state.draft)) return;
+    if (state.phase !== 'move' || !state.roundState) return;
     try {
       const chosen = state.draft.play
         ? contextPlays(state.roundState, CONFIG, {
@@ -212,9 +222,7 @@ const actions = {
       const attackOrders = chosen
         ? withGrenade(chosen.orders, 'attack', state.roundState, CONFIG, state.draft.grenade)
         : { moves: [], throws: [], label: 'Стоят', fake: [] };
-      const defense = lesson
-        ? lessonDefenseOrders(lesson, state.roundState)
-        : defenseOrders(state.roundState, CONFIG);
+      const defense = defenseOrders(state.roundState, CONFIG);
       const step = resolveMove(state.roundState, { attack: attackOrders, defense }, CONFIG);
       step.plays = {
         attack: attackOrders.label,
@@ -227,14 +235,10 @@ const actions = {
       state.roundState = step.state;
       state.draft.grenade = null;
       state.phase = 'reveal';
-      state.revealStage = state.tutorial ? 2 : 0;
+      state.revealStage = 0;
       state.error = null;
       clearClock();
-      if (state.tutorial) {
-        state.tutorial.beat = true;
-        render(state, actions);
-        return;
-      }
+      markShownTips();
       if (state.roundState.winner) settle();
       render(state, actions);
     } catch (error) {
@@ -291,35 +295,17 @@ const actions = {
     }
     render(state, actions);
   },
-  onLessonNext() {
-    if (!state.tutorial) return;
-    const next = state.tutorial.index + 1;
-    if (next >= LESSONS.length) {
-      actions.onSkipTutorial();
-      return;
-    }
-    state.tutorial = { index: next, beat: false };
-    beginRound();
+  onTipShown(id) {
+    if (!id || state.tips.includes(id) || state.tipTrail.includes(id)) return;
+    state.tipTrail.push(id);
   },
-  onSkipTutorial() {
-    try {
-      localStorage.setItem(TUTORIAL_KEY, '1');
-    } catch (error) {
-      state.error = error.message;
-    }
-    clearTimers();
-    state = freshState();
-    beginRound();
-  },
-  onTeach() {
-    try {
-      localStorage.removeItem(TUTORIAL_KEY);
-    } catch (error) {
-      state.error = error.message;
-    }
-    clearTimers();
-    state = freshState();
-    beginRound();
+  onCloseTip() {
+    const tip = nextTip(tipView(), state.tips, CONFIG);
+    if (!tip) return;
+    rememberTip(tip.id);
+    state.tips = loadSeenTips();
+    state.tipTrail = state.tipTrail.filter((id) => id !== tip.id);
+    render(state, actions);
   },
   onNext() {
     if (state.matchWinner) {
