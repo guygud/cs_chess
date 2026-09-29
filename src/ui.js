@@ -16,7 +16,7 @@ import {
   resultText,
   throwCaption,
 } from './timeline.js';
-import { LESSONS, coachTarget, commitReady, lessonAt } from './tutorial.js?v=3';
+import { nextTip } from './tips.js';
 
 let timers = [];
 
@@ -52,35 +52,25 @@ function clockText(state) {
   return `${minutes}:${seconds}`;
 }
 
-function lessonHead(state) {
-  return `<div class="timer"><b>Урок ${state.tutorial.index + 1} из\u00A0${LESSONS.length}</b></div>`;
+function activeTip(state) {
+  return nextTip({
+    phase: state.phase,
+    round: state.round,
+    roundState: state.roundState,
+    draft: state.draft,
+    menu: state.phase === 'move' ? menuOf(state) : null,
+    wallet: state.wallets?.attack ?? 0,
+  }, state.tips || [], CONFIG);
 }
 
-function coachLine(state) {
-  const lesson = lessonAt(state);
-  if (!lesson || state.tutorial.beat) return '';
-  let task = lesson.task;
-  if (lesson.taskPlay && state.roundState) {
-    const play = contextPlays(state.roundState, CONFIG).plays.find((item) => item.id === lesson.taskPlay);
-    task = task.replaceAll('{play}', play?.label || '');
-  }
-  return `<p class="coach-line">${esc(task)}</p>`;
-}
-
-function skipControl() {
-  return `<button type="button" id="skip-tutorial" class="skip">Пропустить</button>`;
-}
-
-function lessonBeat(state) {
-  const lesson = lessonAt(state);
+function tipLine(state) {
+  const tip = activeTip(state);
+  if (!tip) return '';
   return `
-    <section class="panel">
-      ${lessonHead(state)}
-      <p class="coach-line">${esc(lesson.outcome)}</p>
-      ${feed(state)}
-      <button type="button" id="lesson-next">Дальше</button>
-      ${skipControl()}
-    </section>
+    <p class="tip">
+      <span>${esc(tip.text)}</span>
+      <button type="button" id="tip-close" aria-label="Закрыть">×</button>
+    </p>
   `;
 }
 
@@ -134,7 +124,6 @@ function stepOf(state) {
 
 function stageOf(state) {
   if (state.phase !== 'reveal' && state.phase !== 'review') return 2;
-  if (state.tutorial?.beat) return 2;
   return state.revealStage ?? 0;
 }
 
@@ -408,13 +397,11 @@ function buyKit(buy) {
 
 function buyOverlay(state) {
   const wallet = state.wallets.attack;
-  const lesson = lessonAt(state);
-  const target = coachTarget(lesson, state.draft);
-  const pick = lesson ? null : bestBuy(wallet, CONFIG).id;
+  const target = activeTip(state)?.target || null;
+  const pick = bestBuy(wallet, CONFIG).id;
   const cards = CONFIG.buys.map((buy) => {
     const short = buy.cost - wallet;
     const afford = short <= 0;
-    const allowed = !lesson || lesson.allow.buys.includes(buy.id);
     const classes = [
       'buy-card',
       buy.id === pick ? 'pick' : '',
@@ -424,7 +411,7 @@ function buyOverlay(state) {
       ? `<span class="buy-left">Останется ${formatMoney(wallet - buy.cost)}</span>`
       : `<span class="buy-left short">Не\u00A0хватает ${formatMoney(short)}</span>`;
     return `
-      <button type="button" class="${classes}" data-buy="${esc(buy.id)}"${afford && allowed ? '' : ' disabled'}>
+      <button type="button" class="${classes}" data-buy="${esc(buy.id)}"${afford ? '' : ' disabled'}>
         <span class="buy-name">${esc(buy.label)}</span>
         <span class="buy-cost">${formatMoney(buy.cost)}</span>
         <span class="buy-kit">${esc(buyKit(buy))}</span>
@@ -434,12 +421,11 @@ function buyOverlay(state) {
   }).join('');
   return `
     <div class="buy-overlay">
-      ${state.tutorial ? lessonHead(state) : timerBar(state)}
-      ${coachLine(state)}
+      ${timerBar(state)}
+      ${tipLine(state)}
       <p class="hint">Один закуп на\u00A0всю команду. Оружие сгорит в\u00A0конце раунда.</p>
       <div class="buy-cards">${cards}</div>
       ${state.error ? `<p class="error">${esc(state.error)}</p>` : ''}
-      ${state.tutorial ? skipControl() : ''}
     </div>
   `;
 }
@@ -491,19 +477,16 @@ function plannedOrders(state, playId) {
   return playEntry(state, playId)?.orders || null;
 }
 
-function grenadeRow(state) {
+function grenadeRow(state, target) {
   const stock = state.roundState?.stock?.attack || [];
   if (!stock.length) return '';
-  const lesson = lessonAt(state);
-  const target = coachTarget(lesson, state.draft);
   const tiles = CONFIG.utilityOrder.map((type) => {
     const left = stock.filter((item) => item === type).length;
     if (!left) return '';
-    const blocked = lesson && !lesson.allow.grenades.includes(type);
     const on = state.draft.grenade === type ? ' is-on' : '';
     const coach = target === `grenade:${type}` ? ' coach' : '';
     return `
-      <button type="button" class="chip${on}${coach}" data-grenade="${esc(type)}" aria-pressed="${state.draft.grenade === type}"${blocked ? ' disabled' : ''}>
+      <button type="button" class="chip${on}${coach}" data-grenade="${esc(type)}" aria-pressed="${state.draft.grenade === type}">
         <i class="grenade-mark ${esc(type)}" aria-hidden="true"></i>
         ${esc(CONFIG.utility[type].name)}${left > 1 ? ` ×${left}` : ''}
       </button>
@@ -526,40 +509,39 @@ function verdictMarkup(forecast) {
   return `<span class="verdict ${esc(tone)}"><i></i><b>${esc(score)}</b></span>`;
 }
 
-function fakeChip(state, menu) {
-  if (!menu.fake || lessonAt(state)) return '';
+function fakeChip(state, menu, target) {
+  if (!menu.fake) return '';
   const on = state.draft.fake ? ' is-on' : '';
-  return `<button type="button" id="fake" class="chip${on}" aria-pressed="${state.draft.fake}">Фейк</button>`;
+  const coach = target === 'fake' ? ' coach' : '';
+  return `<button type="button" id="fake" class="chip${on}${coach}" aria-pressed="${state.draft.fake}">Фейк</button>`;
 }
 
 function playRemote(state) {
-  const lesson = lessonAt(state);
-  const target = coachTarget(lesson, state.draft);
+  const target = activeTip(state)?.target || null;
   const menu = menuOf(state);
   const tiles = menu.plays.map((play) => {
     const on = state.draft.play === play.id ? ' is-on' : '';
-    const blocked = lesson && !lesson.allow.plays.includes(play.id);
     const coach = target === `play:${play.id}` ? ' coach' : '';
     return `
-      <button type="button" class="play-button${on}${coach}" data-play="${esc(play.id)}" aria-pressed="${state.draft.play === play.id}" aria-label="${esc(play.label)}"${blocked ? ' disabled' : ''}>
+      <button type="button" class="play-button${on}${coach}" data-play="${esc(play.id)}" aria-pressed="${state.draft.play === play.id}" aria-label="${esc(play.label)}">
         ${miniMarkup(play.orders, state)}
         <span class="play-name">${esc(play.label)}</span>
         ${verdictMarkup(play.forecast)}
       </button>
     `;
   }).join('');
-  const ready = !lesson || commitReady(lesson, state.draft);
   const commitCoach = target === 'commit' ? ' coach' : '';
-  const fake = fakeChip(state, menu);
-  const grenades = grenadeRow(state);
+  const fake = fakeChip(state, menu, target);
+  const grenades = grenadeRow(state, target);
   const chips = fake || grenades ? `<div class="chips">${fake}${grenades}</div>` : '';
   return `
+    ${tipLine(state)}
     <p class="chosen">${esc(planCaption(state))}</p>
     <div class="play-grid">
       ${tiles}
     </div>
     ${chips}
-    <button type="button" id="commit" class="${commitCoach.trim()}"${ready ? '' : ' disabled'}>${state.draft.play ? 'Сделать ход' : 'Стоять'}</button>
+    <button type="button" id="commit" class="${commitCoach.trim()}">${state.draft.play ? 'Сделать ход' : 'Стоять'}</button>
   `;
 }
 
@@ -603,19 +585,7 @@ function feed(state) {
 }
 
 function panel(state) {
-  if (state.tutorial?.beat) return lessonBeat(state);
   if (state.phase === 'move') {
-    if (state.tutorial) {
-      return `
-        <section class="panel">
-          ${lessonHead(state)}
-          ${coachLine(state)}
-          ${playRemote(state)}
-          ${state.error ? `<p class="error">${esc(state.error)}</p>` : ''}
-          ${skipControl()}
-        </section>
-      `;
-    }
     const move = state.roundState.move + 1;
     const last = move > CONFIG.rules.movesPerRound
       ? '<p class="hint">Бомба стоит. Это ход на\u00A0разминирование: защита идёт снимать.</p>'
@@ -630,7 +600,6 @@ function panel(state) {
     `;
   }
   if (state.phase === 'reveal') {
-    if (state.tutorial) return lessonBeat(state);
     const step = state.log.at(-1);
     const over = Boolean(state.roundState.winner);
     const stage = stageOf(state);
@@ -690,12 +659,11 @@ function scoreboard(state) {
     <header class="top">
       <h1>Dust2</h1>
       ${rulesBlock()}
-      <button type="button" id="teach" class="teach">Обучение</button>
       <strong class="money">${formatMoney(shownMoney(state))}</strong>
     </header>
     <section class="scoreboard">
       <div><p class="role">Вы · атака</p><p class="num">${state.score.attack}</p></div>
-      <p class="round">${state.tutorial ? 'Обучение' : `Раунд ${state.round}`}</p>
+      <p class="round">Раунд ${state.round}</p>
       <div><p class="role">Бот · защита</p><p class="num">${state.score.defense}</p><p class="meta">${esc(botBuy ? botBuy.label : 'ещё не закупился')}</p></div>
     </section>
   `;
@@ -825,9 +793,7 @@ export function render(state, actions) {
   });
   app.querySelector('#fake')?.addEventListener('click', () => actions.onToggleFake());
   app.querySelector('#commit')?.addEventListener('click', () => actions.onCommitMove());
-  app.querySelector('#lesson-next')?.addEventListener('click', () => actions.onLessonNext());
-  app.querySelector('#skip-tutorial')?.addEventListener('click', () => actions.onSkipTutorial());
-  app.querySelector('#teach')?.addEventListener('click', () => actions.onTeach());
+  app.querySelector('#tip-close')?.addEventListener('click', () => actions.onCloseTip());
   app.querySelector('#continue')?.addEventListener('click', () => {
     if (stageOf(state) < 2) actions.onSkipReveal();
     else actions.onContinue();
@@ -842,6 +808,8 @@ export function render(state, actions) {
   app.querySelector('#next')?.addEventListener('click', () => actions.onNext());
   paintAim(state, state.draft.play);
   animatePieces();
+  const tip = activeTip(state);
+  if (tip) actions.onTipShown?.(tip.id);
 
   if ((state.phase === 'reveal' || state.phase === 'review') && stageOf(state) < 2) {
     const wait = stageOf(state) === 0 ? CONFIG.ui.moveAnimMs : CONFIG.ui.fightRevealMs;

@@ -37,7 +37,7 @@ button:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
 
 #app {
   /* Карта и пульт должны влезать в экран вместе: карта ограничена высотой окна. */
-  --col: min(100%, 680px, 48vh);
+  --col: min(100%, 680px, 41vh);
   width: min(1100px, calc(100% - 24px));
   margin: 0 auto;
   padding: 20px 0 48px;
@@ -312,8 +312,8 @@ h2 { margin: 0 0 8px; font-size: var(--fs-20); }
   flex-direction: column;
   justify-content: center;
   align-items: center;
-  gap: 12px;
-  padding: 16px;
+  gap: 4px;
+  padding: 6px;
   background: rgba(8, 10, 14, 0.72);
 }
 
@@ -330,7 +330,7 @@ h2 { margin: 0 0 8px; font-size: var(--fs-20); }
   align-items: flex-start;
   gap: 4px;
   min-height: 148px;
-  padding: 16px;
+  padding: 12px;
   text-align: left;
   background: #171c24;
   border: 1px solid var(--line);
@@ -506,7 +506,7 @@ button {
 .mini-arrow.fake { stroke-dasharray: 3 2.2; }
 .mini-arrow.dim { stroke: #4d5765; }
 
-#commit, #continue, #next, #lesson-next {
+#commit, #continue, #next {
   margin-top: 4px;
   background: var(--orange);
   color: #1a1208;
@@ -520,7 +520,7 @@ button {
   min-height: 44px;
   padding: 8px 12px;
 }
-#commit, #continue, #next, #lesson-next { width: 100%; }
+#commit, #continue, #next { width: 100%; }
 
 .actions.transport {
   display: flex;
@@ -530,14 +530,31 @@ button {
 .actions.transport button { flex: 1; min-height: 44px; padding: 8px 4px; }
 .secondary { background: transparent; }
 
-.coach-line {
-  margin: 0 0 8px;
-  padding: 8px 12px;
+.tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 6px;
+  min-height: 53px;
+  padding: 6px 8px 6px 12px;
   background: #24190f;
   border: 1px solid var(--orange);
   border-radius: 10px;
   font-size: var(--fs-15);
   font-weight: 700;
+  line-height: 1.3;
+}
+.tip span { flex: 1; }
+#tip-close {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--orange);
+  font-size: 20px;
+  line-height: 1;
 }
 .coach {
   animation: coach-pulse 1.2s ease-in-out infinite;
@@ -546,23 +563,6 @@ button {
 }
 @keyframes coach-pulse {
   50% { outline-color: transparent; }
-}
-.skip {
-  display: block;
-  width: 100%;
-  margin-top: 4px;
-  padding: 8px;
-  background: transparent;
-  border: none;
-  color: var(--muted);
-  font-size: var(--fs-13);
-}
-.teach {
-  padding: 0;
-  background: transparent;
-  border: none;
-  color: var(--muted);
-  font-size: var(--fs-13);
 }
 
 .feed {
@@ -625,10 +625,10 @@ button {
     max-height: 48vh;
     overflow: auto;
   }
-  #commit, #continue, #next, #lesson-next { position: sticky; bottom: 0; }
-  .coach-line { position: sticky; top: 0; z-index: 2; }
+  #commit, #continue, #next { position: sticky; bottom: 0; }
+  .tip { position: sticky; top: 0; z-index: 2; background: #24190f; }
   .scoreboard { padding: 12px; }
-  .play-button, .chip, #commit, #continue, #next, #lesson-next { min-height: 44px; }
+  .play-button, .chip, #commit, #continue, #next { min-height: 44px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

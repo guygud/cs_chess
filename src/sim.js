@@ -2,7 +2,7 @@ import { CONFIG } from './config.js';
 import { applyRoundEconomy, bestBuy, buyCost, canStep, matchStatus, movesLimit, playRound, resolveMove, createRound, neighbors, weaponStrength, visibleCells, remember } from './engine.js';
 import { defenseOrders, planRound } from './bot.js';
 import { assertPlays, commitOrders, contextPlays, ordersFromPlay } from './plays.js';
-import { LESSONS, lessonAttackOrders, lessonDefenseOrders, lessonRound } from './tutorial.js';
+import { nextTip } from './tips.js';
 
 function expect(condition, message) {
   if (!condition) throw new Error(message);
@@ -475,46 +475,7 @@ function selfCheck() {
     'С плента B не держат пустой сайт при бомбе на A',
   );
 
-  const buyLesson = LESSONS.find((lesson) => lesson.id === 'buy');
-  const full = CONFIG.buys.find((buy) => buy.id === 'full');
-  expect(buyLesson.wallet === 2000, 'Урок закупа начинается с 2000');
-  expect(buyLesson.allow.buys.includes('force') && !buyLesson.allow.buys.includes('eco'), 'Урок закупа просит форс');
-  expect(full.cost > buyLesson.wallet, 'На уроке закупа фулл не по карману');
-
-  for (const lesson of LESSONS) {
-    if (!lesson.expect) continue;
-    const round = lessonRound(lesson);
-    const step = resolveMove(round, {
-      attack: lessonAttackOrders(lesson, round),
-      defense: lessonDefenseOrders(lesson, round),
-    });
-    const fight = step.fights[lesson.expect.cell];
-    const there = step.state.fighters.filter((fighter) => (
-      fighter.side === 'attack' && fighter.point === lesson.expect.cell
-    )).length;
-    if (lesson.expect.contact != null) {
-      expect(Boolean(fight?.contact) === lesson.expect.contact, `${lesson.title}: контакт`);
-    }
-    if (lesson.expect.attackThere) {
-      expect(there === lesson.expect.attackThere, `${lesson.title}: все дошли`);
-    }
-    if (lesson.expect.outcome) {
-      expect(fight.outcome === lesson.expect.outcome, `${lesson.title}: исход боя`);
-    }
-    if (lesson.expect.attackFinal != null) {
-      expect(fight.attackFinal === lesson.expect.attackFinal, `${lesson.title}: сила атаки ${fight.attackFinal}`);
-      expect(fight.defenseFinal === lesson.expect.defenseFinal, `${lesson.title}: сила защиты ${fight.defenseFinal}`);
-    }
-    if (lesson.expect.attackCount) {
-      expect(fight.attackCount === lesson.expect.attackCount, `${lesson.title}: толпа в клетке`);
-    }
-    if (lesson.expect.smoke) {
-      expect(
-        step.thrown.attack.some((item) => item.type === 'smoke' && item.point === lesson.expect.smoke),
-        `${lesson.title}: дымовая в клетке боя`,
-      );
-    }
-  }
+  checkTips();
 
   const opening = contextPlays(createRound(pack('attack'), pack('defense')));
   expect(opening.fake, 'На старте фейк доступен');
@@ -534,11 +495,101 @@ function selfCheck() {
   const longKeys = fromLong.plays.map((play) => play.orders.moves.map((move) => `${move.name}:${move.to}`).sort().join('|'));
   expect(new Set(longKeys).size === longKeys.length && fromLong.plays.length <= 6, 'С выхода список без повторов и не длиннее шести');
 
-  const slotsLesson = LESSONS.find((lesson) => lesson.id === 'slots');
-  const slotsRound = lessonRound(slotsLesson);
-  const slotsPlay = contextPlays(slotsRound).plays.find((play) => play.id === slotsLesson.play);
-  expect(slotsPlay?.forecast.tone === 'loss', 'Прогноз урока про места — проигрыш');
+  const slotsRound = createRound(pack('attack', 'smg'), pack('defense', 'rifle'));
+  place(slotsRound, {
+    [defenseNames[0]]: 'OUTLONG',
+    [defenseNames[1]]: 'OUTLONG',
+  });
+  const slotsPlay = contextPlays(slotsRound).plays.find((play) => play.id === 'rush:PLANTA');
+  expect(slotsPlay?.forecast.tone === 'loss', 'Прогноз толпы против двоих — проигрыш');
   expect(slotsPlay?.forecast.attack === 5 && slotsPlay?.forecast.defense === 6, 'Прогноз 5 против 6');
+}
+
+function stand(round, spots) {
+  round.fighters.forEach((fighter) => {
+    if (spots[fighter.name]) fighter.point = spots[fighter.name];
+  });
+}
+
+function checkTips() {
+  const buy = { phase: 'buy', round: 1, roundState: null, draft: { play: null }, menu: null, wallet: 800 };
+  const buyTip = nextTip(buy, []);
+  expect(buyTip?.id === 'buy', 'На закупе первого раунда подсказка про закуп');
+  expect(nextTip({ ...buy, round: 2 }, [])?.id !== 'buy', 'Во втором раунде закуп не подсказывается');
+  expectBuyTarget(buyTip, buy);
+
+  const opening = createRound(pack('attack', 'smg'), pack('defense', 'rifle'));
+  const openingMenu = contextPlays(opening);
+  const bare = { phase: 'move', round: 1, roundState: opening, draft: { play: null, grenade: null }, menu: openingMenu, wallet: 800 };
+  expect(nextTip(bare, [])?.id === 'move', 'Первый ход без мува — подсказка про мув');
+  expectTarget(nextTip(bare, []), bare);
+
+  const watched = createRound(pack('attack', 'smg'), pack('defense', 'rifle'));
+  stand(watched, { [CONFIG.rosters.defense[0]]: 'OUTLONG' });
+  const watchedMenu = contextPlays(watched);
+  const watchedView = { phase: 'move', round: 1, roundState: watched, draft: { play: 'split:PLANTA', grenade: null }, menu: watchedMenu, wallet: 800 };
+  expect(nextTip(watchedView, [])?.id === 'forecast', 'Выбранный мув при видимом враге — подсказка про счёт');
+
+  const crowded = (stock) => {
+    const round = createRound(pack('attack', 'smg', false, stock), pack('defense', 'rifle'));
+    stand(round, {
+      [CONFIG.rosters.defense[0]]: 'OUTLONG',
+      [CONFIG.rosters.defense[1]]: 'OUTLONG',
+    });
+    return {
+      phase: 'move',
+      round: 1,
+      roundState: round,
+      draft: { play: 'rush:PLANTA', grenade: null },
+      menu: contextPlays(round),
+      wallet: 4000,
+    };
+  };
+  const withFlash = crowded(['flash']);
+  expect(nextTip(withFlash, [])?.id === 'grenade', 'Проигрыш и граната в закупе — подсказка про гранату');
+  expect(nextTip(withFlash, [])?.target === 'grenade:flash', 'Подсказка про гранату указывает на световую');
+  const without = crowded([]);
+  expect(nextTip(without, [])?.id === 'slots', 'Проигрыш толпой без гранаты — подсказка про места');
+  expect(nextTip(withFlash, ['grenade'])?.id === 'slots', 'После гранаты та же толпа говорит про места');
+  expect(nextTip(withFlash, ['grenade', 'slots'])?.id !== 'grenade', 'Подсказка про гранату не повторяется');
+
+  const holdView = { ...bare, draft: { play: 'split:PLANTA', grenade: null } };
+  expect(nextTip(holdView, ['move', 'forecast', 'grenade', 'slots'])?.id === 'hold', 'Своя клетка — подсказка про стойку');
+  expect(nextTip(holdView, ['move', 'forecast', 'grenade', 'slots'])?.target === 'play:hold', 'Стойка указывает на мув «Держать»');
+  expect(nextTip({ ...bare, menu: { plays: bare.menu.plays.filter((play) => play.id !== 'hold'), fake: false } }, ['move'])?.target !== 'play:hold', 'Стойка не указывает на отсутствующий мув');
+
+  expect(nextTip(bare, ['buy', 'move', 'forecast', 'grenade', 'slots', 'hold'])?.id === 'fake', 'На спавне после остальных подсказок — фейк');
+  expect(nextTip(bare, ['buy', 'move', 'forecast', 'grenade', 'slots', 'hold'])?.target === 'fake', 'Фейк указывает на чип');
+  expect(nextTip({ ...bare, menu: { ...openingMenu, fake: false } }, ['buy', 'move', 'forecast', 'grenade', 'slots', 'hold']) === null, 'Без фейка подсказка не появляется');
+
+  for (const view of [buy, bare, watchedView, withFlash, without, holdView]) {
+    expectTarget(nextTip(view, []), view);
+  }
+}
+
+function expectBuyTarget(tip, view) {
+  if (!tip?.target?.startsWith('buy:')) return;
+  const id = tip.target.slice(4);
+  const item = CONFIG.buys.find((buy) => buy.id === id);
+  expect(item && item.cost <= view.wallet, `Закуп ${id} есть и по карману`);
+}
+
+function expectTarget(tip, view) {
+  if (!tip?.target) return;
+  if (tip.target === 'fake') {
+    expect(view.menu?.fake, 'Фейк доступен, раз на него указывает подсказка');
+    return;
+  }
+  const sep = tip.target.indexOf(':');
+  const kind = tip.target.slice(0, sep);
+  const id = tip.target.slice(sep + 1);
+  if (kind === 'buy') expectBuyTarget(tip, view);
+  if (kind === 'play') {
+    expect(view.menu?.plays?.some((play) => play.id === id), `Мув ${id} есть в списке`);
+  }
+  if (kind === 'grenade') {
+    expect(view.roundState?.stock?.attack?.includes(id), `Граната ${id} есть в закупе`);
+  }
 }
 
 function playAgainstDefense(attack, defense, attackPlays, config = CONFIG) {
